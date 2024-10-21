@@ -14,9 +14,11 @@ namespace eval ::tpersist {}
 
     method prop_type2sql { type } {
         switch -exact -- $type {
-            "string"  { return "TEXT" }
-            "integer" { return "INTEGER" }
-            "date"    { return "DATE" }
+            "string"   { return "TEXT" }
+            "integer"  { return "INTEGER" }
+            "date"     { return "DATE" }
+            "datetime" { return "DATETIME" }
+            "bool"     { return "BOOLEAN" }
         }
         return -code error "unknown type \"$type\""
     }
@@ -27,21 +29,36 @@ namespace eval ::tpersist {}
             return ""
         }
 
+        if { [dict get $opts -primarykey] && [dict get $opts -type] eq "combined" } {
+            return "  PRIMARY KEY (\"[join [dict get $opts -name] {", "}]\")"
+        }
+
         set nullable [expr { ![dict get $opts -base] || ![dict get $opts -required] }]
 
         set output "  \"[dict get $opts -name]\""
 
         if { [my type_is_simple [dict get $opts -type]] } {
             append output " [my prop_type2sql [dict get $opts -type]]"
-            if { !$nullable } {
+            if { [dict get $opts -unique] } {
+                append output " UNIQUE"
+            }
+            if { [dict get $opts -primarykey] } {
+                append output " PRIMARY KEY"
+            } elseif { !$nullable } {
                 append output " NOT NULL"
+            }
+            if { [dict get $opts -auto] } {
+                append output " AUTOINCREMENT"
             }
         } else {
             append output " INTEGER"
             if { !$nullable } {
                 append output " NOT NULL"
             }
-            append output " REFERENCES \"[dict get $opts -type]\" (\"id\") ON DELETE"
+            set reference [dict get $opts -type]
+            set table [my entity_get_table $reference]
+            set primarykey [my entity_get_primarykey_mapping $reference]
+            append output " REFERENCES \"$table\" ($primarykey) ON DELETE"
             if { !$nullable } {
                 append output " CASCADE"
             } else {
@@ -49,24 +66,41 @@ namespace eval ::tpersist {}
             }
         }
 
-        append output ","
-
         return $output
 
     }
 
+    method get_index_name { entity field } {
+        return "idx_[string tolower [namespace tail $entity]]__[string tolower $field]"
+    }
+
     method generate_mapping { } {
 
-        set output [list]
+        my generate_helpers
 
-        foreach entity [my get_entities] {
+        set result [list]
+        set need_index [list]
 
-            lappend output "CREATE TABLE \"[namespace tail $entity]\" ("
+        foreach entity [my entities_sort [my entities_get]] {
 
-            lappend output "  \"id\" INTEGER PRIMARY KEY AUTOINCREMENT,"
+            set output [list]
 
+            set is_primarykey_combined [my entity_is_primarykey_combined $entity]
+
+            # primary key
+            if { !$is_primarykey_combined } {
+                set opts [my entity_get_primarykey $entity]
+                lappend output [my prop_mapping $opts]
+            }
+
+            # other fields
             foreach prop [my entity_props_own $entity] {
-                set add [my prop_mapping [my entity_prop_opts $entity $prop]]
+                set opts [my entity_prop_opts $entity $prop]
+                # skip the primary key
+                if { [dict get $opts -primarykey] } {
+                    continue
+                }
+                set add [my prop_mapping $opts]
                 if { $add ne "" } {
                     lappend output $add
                 }
@@ -103,11 +137,30 @@ namespace eval ::tpersist {}
 
             }
 
-            lappend output ");"
+            # primary key (combined)
+            if { $is_primarykey_combined } {
+                set opts [my entity_get_primarykey $entity]
+                lappend output [my prop_mapping $opts]
+            }
+
+            for { set i 0 } { $i < ([llength $output] - 1) } { incr i } {
+                set output [lreplace $output $i $i "[lindex $output $i],"]
+            }
+
+            lappend result \
+                "CREATE TABLE \"[my entity_get_table $entity]\" (" \
+                {*}$output \
+                ");"
+
+            foreach { entity field } [my entity_get_indexes $entity] {
+                lappend result [format "CREATE INDEX \"%s\" ON \"%s\" (\"%s\");" \
+                    [my get_index_name $entity $field] [my entity_get_table $entity] \
+                    $field]
+            }
 
         }
 
-        return [join $output \n]
+        return [join $result \n]
 
     }
 

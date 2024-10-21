@@ -10,43 +10,86 @@ puts "Create DB..."
 
 puts "Define..."
 
-oo::class create Person {
+
+oo::class create User {
     superclass [MyDB entityclass]
 
-    Required email      string -unique 1
-    Required password   string
-    Required name       string
-    Required country    string
-    Required address    string
+    PrimaryKey id         integer -auto 1
+    Required   created_at datetime
+    Required   type       string  -default "user"
+    Required   status     bool    -default 1
+    Required   username   string
+    Required   password   string
+    Required   email      string
+    Required   rating     integer -default 0
+    Set        votes      Vote
+    Set        viewed     View
+    Set        messages   Message
+    Set        moderates  Section
 }
 
-oo::class create Customer {
-    superclass Person
-
-    Required company    string
-    Set      cart_items CartItem
-    Set      orders     Order
-}
-
-oo::class create Order {
+oo::class create Message {
     superclass [MyDB entityclass]
 
-    Required total_price  integer
-    Required date_created date
-    Required customer     Customer
+    PrimaryKey id         integer -auto 1
+    Required   text       string
+    Required   rating     integer -default 0
+    Set        votes      Vote
+    Set        viewed     View
+    Required   author     User
+    Required   created_at datetime
+    Optional   updated_at datetime
 }
 
-oo::class create Employee {
-    superclass Person
-
-    Required department string
-}
-
-oo::class create Product {
+oo::class create Tag {
     superclass [MyDB entityclass]
 
-    Required name  string
-    Required price integer
+    PrimaryKey id    integer -auto 1
+    Required   name  string  -unique 1
+    Set        posts Post
+}
+
+oo::class create Comment {
+    superclass Message
+
+    Required post Post
+}
+
+oo::class create Section {
+    superclass [MyDB entityclass]
+
+    PrimaryKey id         integer -auto 1
+    Set        posts      Post
+    Required   name       string
+    Set        moderators User
+}
+
+oo::class create Vote {
+    superclass [MyDB entityclass]
+
+    PrimaryKey id         integer -auto 1
+    Required   user       User
+    Required   message    Message
+    Required   value      integer
+    Required   created_at datetime
+}
+
+oo::class create Post {
+    superclass Message
+
+    Required title    string
+    Set      comments Comment
+    Required section  Section
+    Set      tags     Tag
+}
+
+oo::class create View {
+    superclass [MyDB entityclass]
+
+    PrimaryKey id             integer -auto 1
+    Required   last_viewed_at datetime
+    Required   user           User
+    Required   message        Message
 }
 
 puts "Create mapping..."

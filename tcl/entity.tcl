@@ -22,29 +22,34 @@ namespace eval ::tpersist {}
 
     }
 
-    method __prop_opts { prop } {
-        set options [lindex [info class definition [self class] "__PROP__$prop"] 0]
-        return $options
-    }
-
     method __is_null { prop } {
         my variable $prop
         return [info exists $prop]
     }
 
-
 }
 
 proc ::oo::define::Required { prop type args } {
-    tailcall Property $prop {*}$args -type $type -required 1 -set 0
+    tailcall Property $prop {*}$args -type $type -required 1 -set 0 -primarykey 0
 }
 
 proc ::oo::define::Set { prop type args } {
-    tailcall Property $prop {*}$args -type $type -required 0 -set 1
+    tailcall Property $prop {*}$args -type $type -required 0 -set 1 -primarykey 0
 }
 
 proc ::oo::define::Optional { prop type args } {
-    tailcall Property $prop {*}$args -type $type -required 0 -set 0
+    tailcall Property $prop {*}$args -type $type -required 0 -set 0 -primarykey 0
+}
+
+proc ::oo::define::PrimaryKey { prop args } {
+    if { [llength $prop] == 1 } {
+        tailcall Property $prop {*}[lrange $args 1 end] -type [lindex $args 0] -required 1 -set 0 -primarykey 1
+    } else {
+        if { [llength $args] } {
+            return -code error "combined primary keys don't accept custom arguments"
+        }
+        tailcall Property $prop -type combined -required 1 -set 0 -primarykey 1
+    }
 }
 
 proc ::oo::define::Property { prop args } {
@@ -56,17 +61,25 @@ proc ::oo::define::Property { prop args } {
     }
 
     set defaults [dict create {*}{
-        -required 0
-        -set 0
-        -unique 0
-        -type "string"
+        -auto       0
+        -required   0
+        -set        0
+        -unique     0
+        -type       "string"
+        -primarykey 0
     }]
 
+    set optional {
+        -default
+    }
+
     dict for { k v } $args {
-        if { ![dict exists $defaults $k] } {
+        if { ![dict exists $defaults $k] && [lsearch -exact $optional $k] == -1 } {
            return -code error "unknown property option \"$k\""
         }
     }
+
+    dict set args -name $prop
 
     set options [dict merge $defaults $args]
     set prop_method "__PROP__$prop"
