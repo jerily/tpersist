@@ -4,6 +4,17 @@
 
 namespace eval ::tpersist {}
 
+proc ::tpersist::type_is_simple { type } {
+    return [expr { $type in {
+        string
+        integer
+        date
+        bool
+        datetime
+        combined
+    } }]
+}
+
 ::oo::class create ::tpersist::Database {
 
     variable entityclass
@@ -19,10 +30,6 @@ namespace eval ::tpersist {}
     method entityclass { } {
         my variable entityclass
         return $entityclass
-    }
-
-    method type_is_simple { type } {
-        return [expr { $type in { string integer date bool datetime combined } }]
     }
 
     method entities_get { } {
@@ -85,7 +92,7 @@ namespace eval ::tpersist {}
         set entity_base [my entity_get_base $entity]
         foreach { entity prop } [my entity_props_recursive $entity_base] {
             set opts [my entity_prop_opts $entity $prop]
-            if { [my type_is_simple [dict get $opts -type]] } {
+            if { [::tpersist::type_is_simple [dict get $opts -type]] } {
                 continue
             }
             if { [dict get $opts -set] } {
@@ -98,7 +105,6 @@ namespace eval ::tpersist {}
 
     method entity_prop_opts { entity prop } {
         set options [lindex [info class definition $entity "__PROP__$prop"] 0]
-        dict set options -name $prop
         dict set options -base [my entity_is_base $entity]
     }
 
@@ -161,7 +167,7 @@ namespace eval ::tpersist {}
         foreach { entity prop } [my entity_props_recursive $entity] {
             set opts [my entity_prop_opts $entity $prop]
             #puts "Check entity: $entity -> $prop -> $opts"
-            if { [my type_is_simple [dict get $opts -type]] } {
+            if { [::tpersist::type_is_simple [dict get $opts -type]] } {
                 continue
             }
             if { [dict get $opts -set] } {
@@ -224,7 +230,7 @@ namespace eval ::tpersist {}
         foreach { entity_base } $entities {
             foreach { entity prop } [my entity_props_recursive $entity_base] {
                 set opts [my entity_prop_opts $entity $prop]
-                if { [my type_is_simple [dict get $opts -type]] } {
+                if { [::tpersist::type_is_simple [dict get $opts -type]] } {
                     continue
                 }
                 if { ![dict get $opts -set] } {
@@ -241,7 +247,7 @@ namespace eval ::tpersist {}
                 foreach { prop_ref_entity prop_ref } [my entity_props_recursive $entity_ref] {
                     set opts_ref [my entity_prop_opts $prop_ref_entity $prop_ref]
                     set type [dict get $opts_ref -type]
-                    if { [my type_is_simple $type] } {
+                    if { [::tpersist::type_is_simple $type] } {
                         continue
                     }
                     if { [my entity_get_base $type] ne $entity_base } {

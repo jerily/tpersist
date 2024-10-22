@@ -4,12 +4,11 @@
 
 package require tpersist
 
-puts "Create DB..."
+#puts "Create DB..."
 
 ::tpersist::DatabaseSqlite3 create MyDB -opt1 11 -opt2 22 -opt3 33
 
-puts "Define..."
-
+#puts "Define..."
 
 oo::class create User {
     superclass [MyDB entityclass]
@@ -92,22 +91,26 @@ oo::class create View {
     Required   message        Message
 }
 
-puts "Create mapping..."
+#puts "Create mapping..."
 
-puts [MyDB generate_mapping]
+#puts [MyDB generate_mapping]
 
-puts "Create a session..."
+#puts "Create a session..."
 
 ::tpersist::session new
 
 puts "Create objects..."
 
-set c1 [Customer new -email "foo@mail.com"]
-set c2 [Customer new -email "bar@mail.com"]
+set u1 [User new -created_at 123 -email "blblb@mail.com" -password foo -username john]
+set s1 [Section new -name "bar"]
+set p1 [Post new -title "foo" -section $s1 -author $u1 -created_at 123 -text "abcd fkj"]
 
-puts "Flush the session..."
+#set u1 [User new -email "foo@mail.com"]
+#set u2 [User new -email "bar@mail.com"]
 
-::tpersist::session done
+#puts "Flush the session..."
 
-puts "Done."
+#::tpersist::session done
+
+#puts "Done."
 

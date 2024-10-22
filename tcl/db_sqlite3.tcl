@@ -37,7 +37,7 @@ namespace eval ::tpersist {}
 
         set output "  \"[dict get $opts -name]\""
 
-        if { [my type_is_simple [dict get $opts -type]] } {
+        if { [::tpersist::type_is_simple [dict get $opts -type]] } {
             append output " [my prop_type2sql [dict get $opts -type]]"
             if { [dict get $opts -unique] } {
                 append output " UNIQUE"
