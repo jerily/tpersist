@@ -8,10 +8,6 @@ namespace eval ::tpersist {}
 
     superclass ::tpersist::Database
 
-    constructor { args } {
-        next
-    }
-
     method prop_type2sql { type } {
         switch -exact -- $type {
             "string"   { return "TEXT" }
@@ -76,10 +72,9 @@ namespace eval ::tpersist {}
 
     method generate_mapping { } {
 
-        my generate_helpers
+        my variable db
 
-        set result [list]
-        set need_index [list]
+        my generate_helpers
 
         foreach entity [my entities_sort [my entities_get]] {
 
@@ -108,7 +103,7 @@ namespace eval ::tpersist {}
 
             if { [llength [info class subclasses $entity]] } {
 
-                lappend output "  \"classtype\" TEXT NOT NULL,"
+                lappend output "  \"classtype\" TEXT NOT NULL"
 
                 set children [list]
                 set tmp_children [info class subclasses $entity]
@@ -143,24 +138,65 @@ namespace eval ::tpersist {}
                 lappend output [my prop_mapping $opts]
             }
 
+            # add commas
             for { set i 0 } { $i < ([llength $output] - 1) } { incr i } {
                 set output [lreplace $output $i $i "[lindex $output $i],"]
             }
 
-            lappend result \
+            set sql [list \
                 "CREATE TABLE \"[my entity_get_table $entity]\" (" \
                 {*}$output \
-                ");"
+                ")"]
+
+            set sql [join $sql \n]
+            #puts "prepare SQL: \[$sql\]"
+            set stmt [$db prepare $sql]
+            set rs [$stmt execute [list]]
+            set result [$rs allrows]
+            if { $result ne "" } {
+                return -code error "unexpected response \"$result\" while executing SQL statement: $sql"
+            }
+            $rs close
+            $stmt close
 
             foreach { entity field } [my entity_get_indexes $entity] {
-                lappend result [format "CREATE INDEX \"%s\" ON \"%s\" (\"%s\");" \
+                set sql [format "CREATE INDEX \"%s\" ON \"%s\" (\"%s\")" \
                     [my get_index_name $entity $field] [my entity_get_table $entity] \
                     $field]
+                set stmt [$db prepare $sql]
+                set rs [$stmt execute [list]]
+                set result [$rs allrows]
+                if { $result ne "" } {
+                    return -code error "unexpected response \"$result\" while executing SQL statement: $sql"
+                }
+                $rs close
+                $stmt close
             }
 
         }
 
-        return [join $result \n]
+    }
+
+    method commit_object { obj table columns values } {
+
+        my variable db
+
+        set columns [join $columns ","]
+        set placeholders [my get_values_placeholders $values]
+        set placeholders [join $placeholders ","]
+
+        set sql "INSERT INTO %s(%s) VALUES (%s) RETURNING rowid"
+        set sql [format $sql $table $columns $placeholders]
+        set stmt [$db prepare $sql]
+        #puts "SQL: $sql"
+        #puts "data: [my get_values_dict $values]"
+        set rs [$stmt execute [my get_values_dict $values]]
+        set result [$rs allrows]
+
+        $rs close
+        $stmt close
+
+        return [dict get [lindex $result 0] id]
 
     }
 

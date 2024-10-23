@@ -6,9 +6,11 @@ namespace eval ::tpersist {}
 
 ::oo::class create ::tpersist::Entity {
 
-    variable __table_name__
+    variable __table_name__ __is_new__ __primary_key__
 
     constructor { args } {
+
+        my variable __is_new__
 
         if { [catch { dict size $args } err] } {
             return -code error "arguments are not a proper dict: $err"
@@ -42,8 +44,9 @@ namespace eval ::tpersist {}
 
         }
 
+        set __is_new__ 1
 
-        ::tpersist::_session_add created [self object]
+        ::tpersist::_session_add [self object]
 
     }
 
@@ -51,11 +54,15 @@ namespace eval ::tpersist {}
 
         my variable $prop
 
-        if { [llength [info level 0]] == 1 } {
-            return [expr { [info exists $prop] ? $prop : "" }]
+        # puts "__PROP! $prop : $value : [llength [info level 0]] : [info level 0] :"
+
+        if { [llength [info level 0]] == 3 } {
+            return [expr { [info exists $prop] ? [set $prop] : "" }]
         }
 
-        puts "Set \[$prop\]: \[$value\]"
+        ::tpersist::_session_add [self object]
+
+        # puts "##### Set \[$prop\]: \[$value\]"
 
         my __prop_validate $prop $value
 
@@ -171,9 +178,35 @@ namespace eval ::tpersist {}
         return [dict get [my __get_prop $prop] -auto]
     }
 
-    method __is_null { prop } {
+    method __is_new { } {
+        my variable __is_new__
+        return $__is_new__
+    }
+
+    method __db_get { } {
+        set myclass [info object class [self object]]
+        while { [catch { [info object namespace $myclass]::my __db } db] } {
+            set myclass [lindex [info class superclasses $myclass] 0]
+            if { $myclass eq "::oo::object" } {
+                return -code error "failed to get database for the object"
+            }
+        }
+        return $db
+    }
+
+    method isNull { prop } {
         my variable $prop
-        return [info exists $prop]
+        return [expr { ![info exists $prop] }]
+    }
+
+    method getPK { } {
+        my variable __primary_key__
+        return $__primary_key__
+    }
+
+    method __setPK { value } {
+        my variable __primary_key__
+        set __primary_key__ $value
     }
 
 }

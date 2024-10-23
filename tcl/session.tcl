@@ -35,7 +35,10 @@ proc ::tpersist::session { action } {
             return
         }
 
+        puts "action is done..."
+
         if { $action eq "done" } {
+            uplevel 1 [list trace remove variable $session_var unset [list ::tpersist::session::_trace_unset $session_ns]]
             uplevel 1 [list ::tpersist::_session_commit $session_ns]
             tailcall unset $session_var
         }
@@ -62,8 +65,7 @@ proc ::tpersist::session { action } {
     puts "*** Create a new session: $session_ns"
 
     namespace eval $session_ns {
-        variable created
-        variable updated
+        variable objs
     }
 
     uplevel 1 [list set $session_var $session_ns]
@@ -89,36 +91,58 @@ proc ::tpersist::session::_trace_unset { session_ns args } {
 
 proc ::tpersist::_session_commit { session_ns } {
 
-    if { ![info exists ${session_ns}::created] && ![info exists ${session_ns}::updated] } {
+    puts "*** Commit changes from session: $session_ns"
+
+    upvar #0 ${session_ns}::objs objs
+
+    if { ![info exists objs] } {
+        puts "*** nothing was created/updated within the session"
         return
     }
 
-    puts "*** Commit changes from session: $session_ns"
+    puts "*** Created/updated objects: $objs"
 
-    if { [info exists ${session_ns}::created] } {
-        puts "*** Created objects: [set ${session_ns}::created]"
-        unset ${session_ns}::created
+    # split objects by databases
+    set dbmap [dict create]
+    foreach obj $objs {
+        set db [[info object namespace $obj]::my __db_get]
+        dict lappend dbmap $db $obj
     }
 
-    if { [info exists ${session_ns}::updated] } {
-        puts "*** Created objects: [set ${session_ns}::updated]"
-        unset ${session_ns}::updated
+    set error 0
+
+    # commit objects from each db
+    dict for { db objs } $dbmap {
+        set error [catch [list $db commit_objects $objs] errmsg]
+        if { $error } {
+            set errmsg "failed to commit objects from \"$db\" database: $errmsg"
+            break
+        }
+    }
+
+    unset objs
+
+    if { $error } {
+        return -code error $errmsg
     }
 
 }
 
-proc ::tpersist::_session_add { action object } {
+proc ::tpersist::_session_add { object } {
 
     set session_ns [_session_active]
     if { $session_ns eq "" } {
         return -code error "session is required when working with the database"
     }
 
-    if { $action eq "created" } {
-        lappend ${session_ns}::created $object
-    } else {
-        lappend ${session_ns}::updated $object
+    set vobjs "${session_ns}::objs"
+
+    # Check if the object is already registered
+    if { [info exists $vobjs] && [lsearch -exact [set $vobjs] $object] != -1 } {
+        return
     }
+
+    lappend $vobjs $object
 
 }
 

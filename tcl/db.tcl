@@ -17,14 +17,35 @@ proc ::tpersist::type_is_simple { type } {
 
 ::oo::class create ::tpersist::Database {
 
-    variable entityclass
+    variable entityclass db
 
-    constructor { } {
+    constructor { backend } {
+
         my variable entityclass
+        my variable db
+
+        if { ![info object isa object $backend] } {
+            return -code error "an instance of tdbc::*::connection object is expected as argument, but got \"$backend\""
+        }
+
+        set dbmap [dict create {*}{
+            ::tdbc::sqlite3::connection ::tpersist::DatabaseSqlite3
+        }]
+
+        set backend_class [info object class $backend]
+        if { ![dict exists $dbmap $backend_class] } {
+            return -code error "an instance of $class class was specified, but only the following classes are supported: [join [dict keys $dbmap] {, }]"
+        }
+
+        set db $backend
+
+        ::oo::objdefine [self object] class [dict get $dbmap $backend_class]
+
         set entityclass [info object namespace [self object]]::Entity
         ::oo::class create $entityclass
         ::oo::define $entityclass superclass ::tpersist::Entity
         ::oo::objdefine $entityclass method __db {} [list return [self object]]
+
     }
 
     method entityclass { } {
@@ -106,6 +127,10 @@ proc ::tpersist::type_is_simple { type } {
     method entity_prop_opts { entity prop } {
         set options [lindex [info class definition $entity "__PROP__$prop"] 0]
         dict set options -base [my entity_is_base $entity]
+    }
+
+    method entity_prop_column { entity prop } {
+        return [dict get [my entity_prop_opts $entity $prop] -name]
     }
 
     method entity_is_base { entity } {
@@ -284,6 +309,94 @@ proc ::tpersist::type_is_simple { type } {
             oo::define $helper_class [list Required [string tolower $entity2] $entity1]
             oo::define $helper_class [list PrimaryKey [list [string tolower $entity1] [string tolower $entity2]]]
         }
+    }
+
+    method commit_objects { objs } {
+
+        # convert objects to their entity names
+        set entities_map [list]
+
+        foreach obj $objs {
+            set entity [info object class $obj]
+            set entity [my entity_get_base $entity]
+            dict lappend entities_map $entity $obj
+        }
+
+        # sort entities according their internal dependencies
+        set entities [my entities_sort [dict keys $entities_map]]
+
+        # commit entities by their types
+        foreach entity $entities {
+            foreach obj [dict get $entities_map $entity] {
+                my commit_object_prepare $obj
+            }
+        }
+
+    }
+
+    method commit_object_prepare { obj } {
+
+        set columns      [list]
+        set values       [list]
+
+        set entity [info object class $obj]
+        set props_own [my entity_props $entity]
+        set entity_base [my entity_get_base $entity]
+
+        # puts "COMMIT entity: $entity"
+        # puts "COMMIT entity_base: $entity_base"
+
+        # puts "OBJ $obj vars1: [info object variables $obj]"
+        # puts "OBJ $obj vars2: [info object vars $obj]"
+
+        foreach { entity_prop prop } [my entity_props_recursive $entity_base] {
+
+            # Skip properties that are foreign to the entity of the object
+            if { [lsearch -exact $props_own $prop] == -1 } {
+                continue
+            }
+
+            set opts [my entity_prop_opts $entity_prop $prop]
+
+            # Skip primary keys as for now
+            if { [dict get $opts -primarykey] } {
+                continue
+            }
+
+            # Skip sets as for now
+            if { [dict get $opts -set] } {
+                continue
+            }
+
+            # Skip NULL properties
+            if { [$obj isNull $prop] } {
+                # puts "Null prop: $entity_prop -> $prop"
+                continue
+            }
+
+            lappend columns [my entity_prop_column $entity_prop $prop]
+            lappend values [$obj $prop]
+
+        }
+
+        if { [llength [info class subclasses $entity_base]] } {
+            lappend columns "classtype"
+            lappend values $entity
+        }
+
+        set pk [my commit_object $obj [my entity_get_table $entity_base] $columns $values]
+        [info object namespace $obj]::my __setPK $pk
+
+    }
+
+    method get_values_placeholders { values } {
+        set count -1
+        return [lmap x $values { set x :value[incr count] }]
+    }
+
+    method get_values_dict { values } {
+        set count -1
+        return [join [lmap x $values { list value[incr count] $x }]]
     }
 
 }

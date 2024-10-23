@@ -2,11 +2,16 @@
 # SPDX-FileCopyrightText: 2024 Neofytos Dimitriou (neo@jerily.cy)
 # SPDX-License-Identifier: MIT.
 
+package require tdbc
+package require tdbc::sqlite3
+
 package require tpersist
 
 #puts "Create DB..."
 
-::tpersist::DatabaseSqlite3 create MyDB -opt1 11 -opt2 22 -opt3 33
+set db_backend [::tdbc::sqlite3::connection new ":memory:"]
+
+::tpersist::Database create MyDB $db_backend
 
 #puts "Define..."
 
@@ -93,7 +98,7 @@ oo::class create View {
 
 #puts "Create mapping..."
 
-#puts [MyDB generate_mapping]
+puts [MyDB generate_mapping]
 
 #puts "Create a session..."
 
@@ -108,9 +113,20 @@ set p1 [Post new -title "foo" -section $s1 -author $u1 -created_at 123 -text "ab
 #set u1 [User new -email "foo@mail.com"]
 #set u2 [User new -email "bar@mail.com"]
 
-#puts "Flush the session..."
+puts "Flush the session..."
 
-#::tpersist::session done
+::tpersist::session done
 
-#puts "Done."
+puts "Done."
 
+foreach table [dict keys [$db_backend tables]] {
+    if { $table in {sqlite_sequence} } continue
+    puts "\n### table: $table"
+    set columns [lsort [dict keys [$db_backend columns $table]]]
+    puts [join $columns " | "]
+    foreach row [$db_backend allrows "SELECT * FROM $table"] {
+        set row [lsort -stride 2 -index 0 $row]
+        set row [dict values $row]
+        puts [join $row " | "]
+    }
+}
