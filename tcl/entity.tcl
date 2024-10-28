@@ -36,8 +36,8 @@ namespace eval ::tpersist {}
 
             set prop [string range $prop 1 end]
 
-            if { [lsearch -exact $myprops $prop] == -1 } {
-                return -code error "unknown argument \"-$prop\""
+            if { $prop ni $myprops } {
+                return -code error "unknown property \"-$prop\""
             }
 
             my $prop $value
@@ -50,7 +50,19 @@ namespace eval ::tpersist {}
 
     }
 
-    method __prop { prop {value {}} } {
+    method __link_many_to_many { obj1 prop1 obj2 prop2 } {
+
+        lassign [[my __db_get] helper_get_entity [info object class $obj1] $prop1 [info object class $obj2] $prop2] \
+                helper_entity helper_prop1 helper_prop2
+
+        puts "Link $obj1 $prop1 -> $obj2 $prop2 -> $helper_entity"
+
+        puts "$helper_entity new -$helper_prop1 $obj1 -$helper_prop2 $obj2"
+        $helper_entity new -$helper_prop1 $obj1 -$helper_prop2 $obj2
+
+    }
+
+    method __prop { prop {value {}} {op -set} } {
 
         my variable $prop
 
@@ -60,13 +72,123 @@ namespace eval ::tpersist {}
             return [expr { [info exists $prop] ? [set $prop] : "" }]
         }
 
-        ::tpersist::_session_add [self object]
-
         # puts "##### Set \[$prop\]: \[$value\]"
 
         my __prop_validate $prop $value
 
-        set $prop $value
+        ::tpersist::_session_add [self object]
+
+        set prop_ref [my __prop_get_many_to_many $prop]
+
+        # if property reference type is not a many-to-many, then just set it and return
+        if { $prop_ref eq "" } {
+            return [set $prop $value]
+        }
+
+        # puts "set m-t-m prop $prop"
+
+        # Here we split $op by "_". If we got a list with more than 1 elements, then $op
+        # has a value "<something>_int" and set $is_internal to true. Otherwise, we will set
+        # $is_internal to false.
+
+        set op [split $op "_"]
+        set is_internal [expr { [llength $op] > 1 }]
+        set op [lindex $op 0]
+
+        # if we are here, then we set a property with a many-to-many reference type
+        if { $op eq "-set" } {
+            # unlink all previous objects
+            if { !$is_internal && [info exists $prop] } {
+                foreach obj $prop {
+                    $obj $prop_ref [self object] -remove_int
+                }
+            }
+            # link new objects
+            foreach obj $value {
+                $obj $prop_ref [self object] -append_int
+                if { !$is_internal } {
+                    my __link_many_to_many [self object] $prop $obj $prop_ref
+                }
+            }
+            return [set $prop $value]
+        }
+
+        if { $op eq "-append" } {
+            # link new objects
+            if { !$is_internal } {
+                foreach obj $value {
+                    $obj $prop_ref [self object] -append_int
+                    my __link_many_to_many [self object] $prop $obj $prop_ref
+                }
+            }
+            return [lappend $prop {*}$value]
+        }
+
+        if { $op eq "-remove" } {
+            # double check that we are linked with the specified objects
+            foreach obj $value {
+                if { ![info exists $prop] || $obj ni [set $prop] } {
+                    return -code error "object [self object] of class\
+                        [info object class [self object]] is not linked with object\
+                        $obj of class [info object class $obj]"
+                }
+                if { !$is_internal } {
+                    $obj $prop_ref [self object] -remove_int
+                }
+                set pos [lsearch -exact [set $prop] $obj]
+                set $prop [lreplace [set $prop] $pos $pos]
+            }
+            return [set $prop]
+        }
+
+        return -code error "unknown op: $op"
+
+    }
+
+    method __prop_get_many_to_many { prop } {
+
+        set myclass [info object class [self object]]
+
+        set opts [my __get_prop $prop]
+
+        if { ![dict get $opts -set] } {
+            return ""
+        }
+
+        set type [my __prop_get_type $prop]
+
+        if { [::tpersist::type_is_simple $type] } {
+            return ""
+        }
+
+        set entity_ref $type
+        set methods [info class methods $entity_ref -all -private]
+        # Filter the method list by the __PROP__* pattern
+        set props [lsearch -all -inline -glob $methods "__PROP__*"]
+        # Cut the prefix "__PROP__"
+        set props [lmap x $props { string range $x 8 end }]
+
+        # puts "Check : $props : of : $entity_ref :"
+
+        foreach prop_ref $props {
+
+            set opts_ref [my __get_prop $prop_ref $entity_ref]
+
+            # puts "Check prop $prop_ref ... $opts_ref"
+
+            if { ![dict get $opts_ref -set] } {
+                continue
+            }
+
+            set type_ref [my __prop_get_type $prop_ref $entity_ref]
+
+            if { $type_ref eq $myclass } {
+                return $prop_ref
+            }
+
+        }
+
+        return ""
 
     }
 
@@ -130,8 +252,11 @@ namespace eval ::tpersist {}
         return $props
     }
 
-    method __get_prop { prop } {
-        set myclass [info object class [self object]]
+    method __get_prop { prop {myclass {}} } {
+        if { $myclass eq "" } {
+            set myclass [info object class [self object]]
+        }
+        # puts "myclass: $myclass"
         set method "__PROP__$prop"
         while { [catch { info class definition $myclass $method } options] } {
             set myclass [lindex [info class superclasses $myclass] 0]
@@ -146,9 +271,14 @@ namespace eval ::tpersist {}
     method __get_props_required { {own {}} } {
         set result [list]
         foreach prop [my __get_props $own] {
-            if { [dict get [my __get_prop $prop] -required] } {
-                lappend result $prop
+            set opts [my __get_prop $prop]
+            if { ![dict get $opts -required] } {
+                continue
             }
+            if { [dict get $opts -type] eq "combined" } {
+                continue
+            }
+            lappend result $prop
         }
         return $result
     }
@@ -161,8 +291,8 @@ namespace eval ::tpersist {}
         return [dict get [my __get_prop $prop] -default]
     }
 
-    method __prop_get_type { prop } {
-        set opts [my __get_prop $prop]
+    method __prop_get_type { prop {myclass {}} } {
+        set opts [my __get_prop $prop $myclass]
         set type [dict get $opts -type]
         if { ![::tpersist::type_is_simple $type] } {
             set type [namespace which -command $type]
@@ -236,8 +366,6 @@ proc ::oo::define::PrimaryKey { prop args } {
 
 proc ::oo::define::Property { prop args } {
 
-    # puts "PROP:$prop:ARGS:$args:"
-
     if { [catch { dict size $args } err] } {
         return -code error "arguments are not a proper dict: $err"
     }
@@ -256,7 +384,7 @@ proc ::oo::define::Property { prop args } {
     }
 
     dict for { k v } $args {
-        if { ![dict exists $defaults $k] && [lsearch -exact $optional $k] == -1 } {
+        if { ![dict exists $defaults $k] && $k ni $optional } {
            return -code error "unknown property option \"$k\""
         }
     }
@@ -264,7 +392,10 @@ proc ::oo::define::Property { prop args } {
     dict set args -name $prop
 
     set options [dict merge $defaults $args]
+
     set prop_method "__PROP__$prop"
+
+    # puts "PROP:$prop OPTIONS:$options"
 
     if { ![catch [list uplevel 1 renamemethod $prop_method __test__existence__]] } {
         uplevel 1 renamemethod __test__existence__ $prop_method

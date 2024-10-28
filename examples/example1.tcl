@@ -106,9 +106,11 @@ puts [MyDB generate_mapping]
 
 puts "Create objects..."
 
-set u1 [User new -created_at 123 -email "blblb@mail.com" -password foo -username john]
 set s1 [Section new -name "bar"]
+set s2 [Section new -name "foo"]
+set u1 [User new -created_at 123 -email "blblb@mail.com" -password foo -username john -moderates $s2]
 set p1 [Post new -title "foo" -section $s1 -author $u1 -created_at 123 -text "abcd fkj"]
+set p2 [Post new -title "title in s2" -section $s2 -author $u1 -created_at 222 -text "msg in s2"]
 
 #set u1 [User new -email "foo@mail.com"]
 #set u2 [User new -email "bar@mail.com"]
@@ -119,14 +121,58 @@ puts "Flush the session..."
 
 puts "Done."
 
+proc print_table { table data } {
+    set row_size [dict create]
+    foreach row $data {
+        for { set i 0 } { $i < [llength $row] } { incr i } {
+            set size [string length [lindex $row $i]]
+            if { ![dict exists $row_size $i] || [dict get $row_size $i] < $size } {
+                dict set row_size $i $size
+            }
+        }
+    }
+    set splitter ""
+    set format [list]
+    foreach column [lsort [dict keys $row_size]] {
+        lappend format "%-[dict get $row_size $column]s"
+        if { [llength $splitter] } {
+            append splitter "-"
+        }
+        append splitter [string repeat "-" [dict get $row_size $column]]
+        append splitter "-+"
+    }
+    set format "[join $format { | }] |"
+    set width [string length $splitter]
+
+    set x "\n----\[ table: $table \]--"
+    set c [expr { $width - [string length $x] + 1 }]
+    if { $c > 0 } {
+        append x [string repeat "-" $c]
+    }
+    puts $x
+
+    puts [format $format {*}[lindex $data 0]]
+    puts $splitter
+    foreach row [lrange $data 1 end] {
+        puts [format $format {*}$row]
+    }
+    puts [string repeat "-" $width]
+}
+
 foreach table [dict keys [$db_backend tables]] {
     if { $table in {sqlite_sequence} } continue
-    puts "\n### table: $table"
-    set columns [lsort [dict keys [$db_backend columns $table]]]
-    puts [join $columns " | "]
-    foreach row [$db_backend allrows "SELECT * FROM $table"] {
-        set row [lsort -stride 2 -index 0 $row]
-        set row [dict values $row]
-        puts [join $row " | "]
+    set columns [dict keys [$db_backend columns $table]]
+    set data [list $columns]
+    foreach vals [$db_backend allrows "SELECT * FROM $table"] {
+        set row [list]
+        foreach column $columns {
+            if { [dict exists $vals $column] } {
+                lappend row [dict get $vals $column]
+            } else {
+                lappend row "<NULL>"
+            }
+        }
+        lappend data $row
     }
+    print_table $table $data
 }

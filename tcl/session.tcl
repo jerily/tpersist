@@ -113,17 +113,39 @@ proc ::tpersist::_session_commit { session_ns } {
 
     # commit objects from each db
     dict for { db objs } $dbmap {
-        set error [catch [list $db commit_objects $objs] errmsg]
+
+        if { [set error [catch [list $db transaction_begin] errmsg erropts]] } {
+            set errmsg "failed to begin transaction while commiting objects from \"$db\" database: $errmsg"
+        } else {
+
+            set error [catch [list $db commit_objects $objs] errmsg erropts]
+            if { $error } {
+                set errmsg "failed to commit objects from \"$db\" database: $errmsg"
+                break
+            }
+
+            if { $error } {
+                if { [catch [list $db transaction_rollback] errmsg_more erropts] } {
+                    append errmsg "; failed to rollback the transaction: $errmsg_more"
+                }
+            } else {
+                if { [set error [catch [list $db transaction_commit] errmsg erropts]] } {
+                    set errmsg "failed to commit transaction while commiting objects from \"$db\" database: $errmsg"
+                }
+            }
+
+        }
+
         if { $error } {
-            set errmsg "failed to commit objects from \"$db\" database: $errmsg"
             break
         }
+
     }
 
     unset objs
 
     if { $error } {
-        return -code error $errmsg
+        return -options $erropts $errmsg
     }
 
 }

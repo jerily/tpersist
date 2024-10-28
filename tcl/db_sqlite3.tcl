@@ -101,7 +101,7 @@ namespace eval ::tpersist {}
                 }
             }
 
-            if { [llength [info class subclasses $entity]] } {
+            if { [my entity_is_multiclass $entity] } {
 
                 lappend output "  \"classtype\" TEXT NOT NULL"
 
@@ -177,7 +177,7 @@ namespace eval ::tpersist {}
 
     }
 
-    method commit_object { obj table columns values } {
+    method commit_object { table columns values pk } {
 
         my variable db
 
@@ -185,7 +185,10 @@ namespace eval ::tpersist {}
         set placeholders [my get_values_placeholders $values]
         set placeholders [join $placeholders ","]
 
-        set sql "INSERT INTO %s(%s) VALUES (%s) RETURNING rowid"
+        set sql "INSERT INTO %s(%s) VALUES (%s)"
+        if { $pk ne "" } {
+            append sql " RETURNING $pk"
+        }
         set sql [format $sql $table $columns $placeholders]
         set stmt [$db prepare $sql]
         #puts "SQL: $sql"
@@ -196,7 +199,11 @@ namespace eval ::tpersist {}
         $rs close
         $stmt close
 
-        return [dict get [lindex $result 0] id]
+        if { $pk eq "" } {
+            return ""
+        }
+
+        return [dict get [lindex $result 0] $pk]
 
     }
 

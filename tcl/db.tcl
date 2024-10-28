@@ -186,6 +186,11 @@ proc ::tpersist::type_is_simple { type } {
         return [expr { [dict get [my entity_get_primarykey $entity] -type] eq "combined" }]
     }
 
+    method entity_is_multiclass { entity } {
+        set entity [my entity_get_base $entity]
+        return [expr { [llength [info class subclasses $entity]] != 0 }]
+    }
+
     method entity_get_dependencies { entity } {
         set dependencies [list]
         #puts "Data to work: [my entity_props_recursive $entity]"
@@ -248,9 +253,11 @@ proc ::tpersist::type_is_simple { type } {
         return $entities
     }
 
-    method entities_get_many_to_many { } {
+    method entities_get_many_to_many { {entities {}} } {
         set result [list]
-        set entities [my entities_get]
+        if { ![llength $entities] } {
+            set entities [my entities_get]
+        }
         set processed [list]
         foreach { entity_base } $entities {
             foreach { entity prop } [my entity_props_recursive $entity_base] {
@@ -283,6 +290,7 @@ proc ::tpersist::type_is_simple { type } {
                     } else {
                         set need_many_to_many 0
                     }
+                    break
                 }
                 if { $need_many_to_many == -1 } {
                     return -code error "entity \"$entity_base\" depends on \"$entity_ref\",\
@@ -291,7 +299,7 @@ proc ::tpersist::type_is_simple { type } {
                 if { !$need_many_to_many } {
                     continue
                 }
-                lappend result $entity_base $entity_ref
+                lappend result $entity $prop $prop_ref_entity $prop_ref
             }
             lappend processed $entity_base
         }
@@ -299,16 +307,30 @@ proc ::tpersist::type_is_simple { type } {
     }
 
     method generate_helpers { } {
-        foreach { entity1 entity2 } [my entities_get_many_to_many] {
-            set entity1 [namespace tail $entity1]
-            set entity2 [namespace tail $entity2]
-            set helper_class [join [lsort [list $entity1 $entity2]] "_"]
-            oo::class create $helper_class
-            oo::define $helper_class [list superclass [my entityclass]]
-            oo::define $helper_class [list Required [string tolower $entity1] $entity2]
-            oo::define $helper_class [list Required [string tolower $entity2] $entity1]
-            oo::define $helper_class [list PrimaryKey [list [string tolower $entity1] [string tolower $entity2]]]
+        foreach { entity1 prop1 entity2 prop2 } [my entities_get_many_to_many] {
+            # helper_get_entity will generate a helper if it is not already generated
+            my helper_get_entity $entity1 $prop1 $entity2 $prop2
         }
+    }
+
+    method helper_get_entity { entity1 prop1 entity2 prop2 } {
+
+        set entity1 [namespace tail [my entity_get_base $entity1]]
+        set entity2 [namespace tail [my entity_get_base $entity2]]
+        set helper_entity ::[join [lsort [list $entity1 $entity2]] "_"]
+        set helper_prop1 [string tolower $entity1]
+        set helper_prop2 [string tolower $entity2]
+
+        if { ![info object isa class $helper_entity] } {
+            oo::class create $helper_entity
+            oo::define $helper_entity [list superclass [my entityclass]]
+            oo::define $helper_entity [list Required $helper_prop1 $entity1]
+            oo::define $helper_entity [list Required $helper_prop2 $entity2]
+            oo::define $helper_entity [list PrimaryKey [list $helper_prop1 $helper_prop2]]
+        }
+
+        return [list $helper_entity $helper_prop1 $helper_prop2]
+
     }
 
     method commit_objects { objs } {
@@ -334,6 +356,21 @@ proc ::tpersist::type_is_simple { type } {
 
     }
 
+    method transaction_begin { } {
+        my variable db
+        $db begintransaction
+    }
+
+    method transaction_commit { } {
+        my variable db
+        $db commit
+    }
+
+    method transaction_rollback { } {
+        my variable db
+        $db rollback
+    }
+
     method commit_object_prepare { obj } {
 
         set columns      [list]
@@ -342,6 +379,7 @@ proc ::tpersist::type_is_simple { type } {
         set entity [info object class $obj]
         set props_own [my entity_props $entity]
         set entity_base [my entity_get_base $entity]
+        set pk ""
 
         # puts "COMMIT entity: $entity"
         # puts "COMMIT entity_base: $entity_base"
@@ -360,6 +398,9 @@ proc ::tpersist::type_is_simple { type } {
 
             # Skip primary keys as for now
             if { [dict get $opts -primarykey] } {
+                if { [dict get $opts -type] ne "combined" } {
+                    set pk [dict get $opts -name]
+                }
                 continue
             }
 
@@ -374,8 +415,14 @@ proc ::tpersist::type_is_simple { type } {
                 continue
             }
 
+            if { [::tpersist::type_is_simple [dict get $opts -type]] } {
+                set value [$obj $prop]
+            } else {
+                set value [[$obj $prop] getPK]
+            }
+
             lappend columns [my entity_prop_column $entity_prop $prop]
-            lappend values [$obj $prop]
+            lappend values $value
 
         }
 
@@ -384,8 +431,10 @@ proc ::tpersist::type_is_simple { type } {
             lappend values $entity
         }
 
-        set pk [my commit_object $obj [my entity_get_table $entity_base] $columns $values]
-        [info object namespace $obj]::my __setPK $pk
+        set pk [my commit_object [my entity_get_table $entity_base] $columns $values $pk]
+        if { $pk ne "" } {
+            [info object namespace $obj]::my __setPK $pk
+        }
 
     }
 
