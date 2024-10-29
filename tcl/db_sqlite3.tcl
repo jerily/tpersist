@@ -84,7 +84,7 @@ namespace eval ::tpersist {}
 
             # primary key
             if { !$is_primarykey_combined } {
-                set opts [my entity_get_primarykey $entity]
+                set opts [$entity property [$entity primarykey]]
                 lappend output [my prop_mapping $opts]
             }
 
@@ -134,7 +134,7 @@ namespace eval ::tpersist {}
 
             # primary key (combined)
             if { $is_primarykey_combined } {
-                set opts [my entity_get_primarykey $entity]
+                set opts [$entity property [$entity primarykey]]
                 lappend output [my prop_mapping $opts]
             }
 

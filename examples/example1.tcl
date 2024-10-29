@@ -9,7 +9,12 @@ package require tpersist
 
 #puts "Create DB..."
 
-set db_backend [::tdbc::sqlite3::connection new ":memory:"]
+# set db_file "demo.sqlite3"
+set db_file ":memory:"
+
+set db_exists [file exists $db_file]
+
+set db_backend [::tdbc::sqlite3::connection new $db_file]
 
 ::tpersist::Database create MyDB $db_backend
 
@@ -96,83 +101,61 @@ oo::class create View {
     Required   message        Message
 }
 
-#puts "Create mapping..."
+if { $db_exists } {
+    puts "Use existing data..."
+} else {
+    puts "Create mapping..."
+    MyDB generate_mapping
+}
 
-puts [MyDB generate_mapping]
+if { !$db_exists } {
 
-#puts "Create a session..."
+    #puts "Create a session..."
+
+    ::tpersist::session new
+
+    puts "Create objects..."
+
+    set s1 [Section new -name "bar"]
+    set s2 [Section new -name "foo"]
+    set u1 [User new -created_at 123 -email "blblb@mail.com" -password foo -username john -moderates $s2]
+    set p1 [Post new -title "foo" -section $s1 -author $u1 -created_at 123 -text "abcd fkj"]
+    set p2 [Post new -title "title in s2" -section $s2 -author $u1 -created_at 222 -text "msg in s2"]
+
+    puts "Flush the session..."
+
+    ::tpersist::session done
+
+    puts "Done."
+
+}
+
+puts "\nDump:"
+puts [join [MyDB dump] \n]
+
+puts "\nRetrieve objects..."
 
 ::tpersist::session new
 
-puts "Create objects..."
+set s1 [Section get 1]
 
-set s1 [Section new -name "bar"]
-set s2 [Section new -name "foo"]
-set u1 [User new -created_at 123 -email "blblb@mail.com" -password foo -username john -moderates $s2]
-set p1 [Post new -title "foo" -section $s1 -author $u1 -created_at 123 -text "abcd fkj"]
-set p2 [Post new -title "title in s2" -section $s2 -author $u1 -created_at 222 -text "msg in s2"]
+puts "Session s1:"
+puts "  id         : [$s1 id]"
+puts "  posts      : [$s1 posts]"
+puts "  name       : [$s1 name]"
+puts "  moderators : [$s1 moderators]"
 
-#set u1 [User new -email "foo@mail.com"]
-#set u2 [User new -email "bar@mail.com"]
+set p2 [Post get 2]
 
-puts "Flush the session..."
+puts "Post p2:"
+puts "  id         : [$s1 id]"
+puts "  posts      : [$s1 posts]"
+puts "  name       : [$s1 name]"
+puts "  moderators : [$s1 moderators]"
 
 ::tpersist::session done
 
-puts "Done."
 
-proc print_table { table data } {
-    set row_size [dict create]
-    foreach row $data {
-        for { set i 0 } { $i < [llength $row] } { incr i } {
-            set size [string length [lindex $row $i]]
-            if { ![dict exists $row_size $i] || [dict get $row_size $i] < $size } {
-                dict set row_size $i $size
-            }
-        }
-    }
-    set splitter ""
-    set format [list]
-    foreach column [lsort [dict keys $row_size]] {
-        lappend format "%-[dict get $row_size $column]s"
-        if { [llength $splitter] } {
-            append splitter "-"
-        }
-        append splitter [string repeat "-" [dict get $row_size $column]]
-        append splitter "-+"
-    }
-    set format "[join $format { | }] |"
-    set width [string length $splitter]
 
-    set x "\n----\[ table: $table \]--"
-    set c [expr { $width - [string length $x] + 1 }]
-    if { $c > 0 } {
-        append x [string repeat "-" $c]
-    }
-    puts $x
 
-    puts [format $format {*}[lindex $data 0]]
-    puts $splitter
-    foreach row [lrange $data 1 end] {
-        puts [format $format {*}$row]
-    }
-    puts [string repeat "-" $width]
-}
 
-foreach table [dict keys [$db_backend tables]] {
-    if { $table in {sqlite_sequence} } continue
-    set columns [dict keys [$db_backend columns $table]]
-    set data [list $columns]
-    foreach vals [$db_backend allrows "SELECT * FROM $table"] {
-        set row [list]
-        foreach column $columns {
-            if { [dict exists $vals $column] } {
-                lappend row [dict get $vals $column]
-            } else {
-                lappend row "<NULL>"
-            }
-        }
-        lappend data $row
-    }
-    print_table $table $data
-}

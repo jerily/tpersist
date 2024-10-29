@@ -105,8 +105,20 @@ proc ::tpersist::_session_commit { session_ns } {
     # split objects by databases
     set dbmap [dict create]
     foreach obj $objs {
-        set db [[info object namespace $obj]::my __db_get]
+
+        set updated [[info object namespace $obj]::my __get_updated]
+        if { ![llength $updated] } {
+            puts "*** Skip not updated object: $obj"
+            continue
+        }
+
+        if { $updated ne "all" } {
+            return -code error "updating of individual properties has not yet been implemented"
+        }
+
+        set db [[info object class $obj] db]
         dict lappend dbmap $db $obj
+
     }
 
     set error 0

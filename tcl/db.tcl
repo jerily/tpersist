@@ -44,7 +44,7 @@ proc ::tpersist::type_is_simple { type } {
         set entityclass [info object namespace [self object]]::Entity
         ::oo::class create $entityclass
         ::oo::define $entityclass superclass ::tpersist::Entity
-        ::oo::objdefine $entityclass method __db {} [list return [self object]]
+        ::oo::objdefine $entityclass method db {} [list return [self object]]
 
     }
 
@@ -91,7 +91,7 @@ proc ::tpersist::type_is_simple { type } {
     method entity_props_recursive { entity } {
         set result [list]
         #puts "Get recursive: $entity"
-        set entities [list [my entity_get_base $entity]]
+        set entities [list [$entity base]]
         #puts "Entities: $entities"
         while { [llength $entities] } {
             set entity [lindex $entities 0]
@@ -110,7 +110,7 @@ proc ::tpersist::type_is_simple { type } {
         if { [my entity_is_primarykey_combined $entity] } {
             return $result
         }
-        set entity_base [my entity_get_base $entity]
+        set entity_base [$entity base]
         foreach { entity prop } [my entity_props_recursive $entity_base] {
             set opts [my entity_prop_opts $entity $prop]
             if { [::tpersist::type_is_simple [dict get $opts -type]] } {
@@ -135,47 +135,16 @@ proc ::tpersist::type_is_simple { type } {
 
     method entity_is_base { entity } {
         my variable entityclass
-        return [expr { [lindex [info class superclasses $entity] 0] eq $entityclass }]
-    }
-
-    method entity_get_base { entity } {
-        while { ![my entity_is_base $entity] } {
-            set entity [lindex [info class superclasses $entity] 0]
-            if { $entity eq "::oo::object" } {
-                return -code error "class doesn't belong to this database"
-            }
-        }
-        return [namespace which -command $entity]
+        return [$entity is_base]
     }
 
     method entity_get_table { entity } {
-        set entity [my entity_get_base $entity]
+        set entity [$entity base]
         set table [namespace tail $entity]
     }
 
-    method entity_get_primarykey { entity } {
-        set entity [my entity_get_base $entity]
-        foreach prop [my entity_props_own $entity] {
-            set opts [my entity_prop_opts $entity $prop]
-            if { [dict get $opts -primarykey] } {
-                return $opts
-            }
-        }
-        return [dict create {*}{
-            -auto       1
-            -required   1
-            -set        0
-            -unique     0
-            -type       "integer"
-            -primarykey 1
-            -name       "id"
-            -base       1
-        }]
-    }
-
     method entity_get_primarykey_mapping { entity } {
-        set opts [my entity_get_primarykey $entity]
-        set name [dict get $opts -name]
+        set name [$entity primarykey]
         if { [llength $name] != 1 } {
             set name [join $name {", "}]
         }
@@ -183,11 +152,11 @@ proc ::tpersist::type_is_simple { type } {
     }
 
     method entity_is_primarykey_combined { entity } {
-        return [expr { [dict get [my entity_get_primarykey $entity] -type] eq "combined" }]
+        return [expr { [$entity property [$entity primarykey] -type] eq "combined" }]
     }
 
     method entity_is_multiclass { entity } {
-        set entity [my entity_get_base $entity]
+        set entity [$entity base]
         return [expr { [llength [info class subclasses $entity]] != 0 }]
     }
 
@@ -204,7 +173,7 @@ proc ::tpersist::type_is_simple { type } {
                 continue
             }
             #puts "lappend dep: [dict get $opts -type]"
-            set dependency [my entity_get_base ::[dict get $opts -type]]
+            set dependency [[dict get $opts -type] base]
             if { [lsearch -exact $dependencies $dependency] == -1 } {
                 lappend dependencies $dependency
             }
@@ -213,12 +182,12 @@ proc ::tpersist::type_is_simple { type } {
     }
 
     method entities_sort { entities } {
-        #puts "List: $entities"
+        # puts "List: $entities"
         set length [llength $entities]
         for { set i 0 } { $i < $length } { incr i } {
             set entity [lindex $entities $i]
             set dependencies [my entity_get_dependencies $entity]
-            #puts "Index: $i Entity: $entity deps: $dependencies"
+            # puts "Index: $i Entity: $entity deps: $dependencies"
             set need_to_move [list]
             foreach dependency $dependencies {
                 set pos [lsearch -exact $entities $dependency]
@@ -242,7 +211,7 @@ proc ::tpersist::type_is_simple { type } {
             }
             # move dependencies one by one from a larger index to a smaller one
             foreach pos [lsort -integer -decreasing $need_to_move] {
-                set depencency [lindex $entities $pos]
+                set dependency [lindex $entities $pos]
                 #puts "Move dependency: $dependency"
                 set entities [lreplace $entities $pos $pos]
                 set entities [linsert $entities $i $dependency]
@@ -268,7 +237,7 @@ proc ::tpersist::type_is_simple { type } {
                 if { ![dict get $opts -set] } {
                     continue
                 }
-                set entity_ref [my entity_get_base [dict get $opts -type]]
+                set entity_ref [[dict get $opts -type] base]
                 if { $entity_ref eq $entity_base } {
                     continue
                 }
@@ -282,7 +251,7 @@ proc ::tpersist::type_is_simple { type } {
                     if { [::tpersist::type_is_simple $type] } {
                         continue
                     }
-                    if { [my entity_get_base $type] ne $entity_base } {
+                    if { [$type base] ne $entity_base } {
                         continue
                     }
                     if { [dict get $opts_ref -set] } {
@@ -315,8 +284,8 @@ proc ::tpersist::type_is_simple { type } {
 
     method helper_get_entity { entity1 prop1 entity2 prop2 } {
 
-        set entity1 [namespace tail [my entity_get_base $entity1]]
-        set entity2 [namespace tail [my entity_get_base $entity2]]
+        set entity1 [namespace tail [$entity1 base]]
+        set entity2 [namespace tail [$entity2 base]]
         set helper_entity ::[join [lsort [list $entity1 $entity2]] "_"]
         set helper_prop1 [string tolower $entity1]
         set helper_prop2 [string tolower $entity2]
@@ -340,7 +309,7 @@ proc ::tpersist::type_is_simple { type } {
 
         foreach obj $objs {
             set entity [info object class $obj]
-            set entity [my entity_get_base $entity]
+            set entity [$entity base]
             dict lappend entities_map $entity $obj
         }
 
@@ -371,6 +340,34 @@ proc ::tpersist::type_is_simple { type } {
         $db rollback
     }
 
+    method retrieve_object { entity primarykey } {
+
+        my variable db
+
+        puts "retrieve entity: $entity"
+
+        set entity_base [$entity base]
+        puts "base entity: $entity_base"
+        set table [my entity_get_table $entity_base]
+
+        set columns [$entity properties]
+        set col_pk [$entity primarykey]
+
+        set sql "SELECT * FROM $table WHERE $col_pk = :primarykey"
+        puts "sql: $sql"
+
+        set stmt [$db prepare $sql]
+        set rs [$stmt execute [dict create primarykey $primarykey]]
+        set result [$rs allrows -as dicts]
+
+        $rs close
+        $stmt close
+
+        puts "got: [lindex $result 0]"
+        return [lindex $result 0]
+
+    }
+
     method commit_object_prepare { obj } {
 
         set columns      [list]
@@ -378,7 +375,7 @@ proc ::tpersist::type_is_simple { type } {
 
         set entity [info object class $obj]
         set props_own [my entity_props $entity]
-        set entity_base [my entity_get_base $entity]
+        set entity_base [$entity base]
         set pk ""
 
         # puts "COMMIT entity: $entity"
@@ -446,6 +443,79 @@ proc ::tpersist::type_is_simple { type } {
     method get_values_dict { values } {
         set count -1
         return [join [lmap x $values { list value[incr count] $x }]]
+    }
+
+}
+
+# For debugging only
+
+oo::define ::tpersist::Database {
+
+    method dump_table { table data  } {
+        set result [list]
+        set row_size [dict create]
+        foreach row $data {
+            for { set i 0 } { $i < [llength $row] } { incr i } {
+                set size [string length [lindex $row $i]]
+                if { ![dict exists $row_size $i] || [dict get $row_size $i] < $size } {
+                    dict set row_size $i $size
+                }
+            }
+        }
+        set splitter ""
+        set format [list]
+        foreach column [lsort [dict keys $row_size]] {
+            lappend format "%-[dict get $row_size $column]s"
+            if { [llength $splitter] } {
+                append splitter "-"
+            }
+            append splitter [string repeat "-" [dict get $row_size $column]]
+            append splitter "-+"
+        }
+        set format "[join $format { | }] |"
+        set width [string length $splitter]
+
+        set x "----\[ table: $table \]--"
+        set c [expr { $width - [string length $x] + 1 }]
+        if { $c > 0 } {
+            append x [string repeat "-" $c]
+        }
+        lappend result $x
+
+        lappend result [format $format {*}[lindex $data 0]]
+        lappend result $splitter
+        foreach row [lrange $data 1 end] {
+            lappend result [format $format {*}$row]
+        }
+        lappend result [string repeat "-" $width]
+    }
+
+    method dump { } {
+
+        my variable db
+
+        set result [list]
+
+        foreach table [dict keys [$db tables]] {
+            if { $table in {sqlite_sequence} } continue
+            set columns [dict keys [$db columns $table]]
+            set data [list $columns]
+            foreach vals [$db allrows "SELECT * FROM $table"] {
+                set row [list]
+                foreach column $columns {
+                    if { [dict exists $vals $column] } {
+                        lappend row [dict get $vals $column]
+                    } else {
+                        lappend row "<NULL>"
+                    }
+                }
+                lappend data $row
+            }
+            lappend result "" {*}[my dump_table $table $data]
+        }
+
+        return $result
+
     }
 
 }

@@ -7,3 +7,4 @@ models
 /ttrek-venv
 /ttrek.json
 /ttrek-lock.json
+/demo.sqlite3
