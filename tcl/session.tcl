@@ -169,14 +169,38 @@ proc ::tpersist::_session_add { object } {
         return -code error "session is required when working with the database"
     }
 
-    set vobjs "${session_ns}::objs"
+    upvar #0 "${session_ns}::objs" objs
+    upvar #0 "${session_ns}::index" index
 
     # Check if the object is already registered
-    if { [info exists $vobjs] && [lsearch -exact [set $vobjs] $object] != -1 } {
+    if { [info exists objs] && $object in $objs } {
         return
     }
 
-    lappend $vobjs $object
+    if { [[info object namespace $object]::my __hasPK] } {
+        set class [info object class $object]
+        set pk    [$object getPK]
+        dict set index $class $pk $object
+    }
+
+    lappend objs $object
+
+}
+
+proc ::tpersist::_session_get_obj { class primarykey } {
+
+    set session_ns [_session_active]
+    if { $session_ns eq "" } {
+        return -code error "session is required when working with the database"
+    }
+
+    upvar #0 "${session_ns}::index" index
+
+    if { ![info exists index] || ![dict exists $index $class] || ![dict exists $index $class $primarykey] } {
+        return -code error "there is no such object in the session"
+    }
+
+    return [dict get $index $class $primarykey]
 
 }
 

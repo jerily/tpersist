@@ -64,7 +64,50 @@ namespace eval ::tpersist {}
 
         # puts "Link $obj1 $prop1 -> $obj2 $prop2 -> $helper_entity"
 
-        $helper_entity new -$helper_prop1 $obj1 -$helper_prop2 $obj2
+        return [$helper_entity new -$helper_prop1 $obj1 -$helper_prop2 $obj2]
+
+    }
+
+    method __update_set { prop } {
+
+        my variable $prop
+
+        set myobj [self object]
+        set myclass [info object class $myobj]
+        set opts [$myclass property $prop]
+        set myprimarykey [my getPK]
+
+        set entity_ref [dict get $opts -type]
+        set prop_ref [my __prop_get_one_to_many $prop]
+
+        # puts "Update set: $prop -> $opts -> $entity_ref -> $prop_ref"
+
+        set is_many_to_many [$entity_ref property $prop_ref -set]
+
+        if { $is_many_to_many } {
+            set ids [[$myclass db] retrieve_pk_many_to_many $myprimarykey $myclass $prop $entity_ref $prop_ref]
+        } else {
+            set ids [[$myclass db] retrieve_pk_one_to_many $myprimarykey $entity_ref $prop_ref]
+        }
+
+        switch -exact -- [llength $ids] {
+            0 { set result [list] }
+            1 {
+                set result [list [$entity_ref get [lindex $ids 0]]]
+            }
+            default {
+                set result [$entity_ref get {*}$ids]
+            }
+        }
+
+        if { $is_many_to_many } {
+            foreach linked_obj $result {
+                set helper_obj [my __link_many_to_many $myobj $prop $linked_obj $prop_ref]
+                [info object namespace $helper_obj]::my __reset_updated
+            }
+        }
+
+        return $result
 
     }
 
@@ -73,10 +116,22 @@ namespace eval ::tpersist {}
         my variable __updated__
         my variable $prop
 
+        set myclass [info object class [self object]]
+        set opts [$myclass property $prop]
+
         # puts "__PROP! $prop : $value : [llength [info level 0]] : [info level 0] :"
 
         if { [llength [info level 0]] == 3 } {
+
+            if { [dict get $opts -set] } {
+                if { ![info exists $prop] } {
+                    set $prop [my __update_set $prop]
+                }
+                return [set $prop]
+            }
+
             return [expr { [info exists $prop] ? [set $prop] : "" }]
+
         }
 
         # puts "##### Set \[$prop\]: \[$value\]"
@@ -91,7 +146,13 @@ namespace eval ::tpersist {}
 
         # if property reference type is not a many-to-many, then just set it and return
         if { $prop_ref eq "" } {
+
+            if { [dict get $opts -primarykey] } {
+                my __setPK $value
+            }
+
             return [set $prop $value]
+
         }
 
         # puts "set m-t-m prop $prop"
@@ -154,6 +215,29 @@ namespace eval ::tpersist {}
 
     }
 
+    method __prop_get_one_to_many { prop } {
+
+        set myclass [info object class [self object]]
+        set opts [$myclass property $prop]
+        set type [dict get $opts -type]
+
+        set entity_ref $type
+        foreach prop_ref [$entity_ref properties] {
+
+            set opts_ref [$entity_ref property $prop_ref]
+
+            set type_ref [dict get $opts_ref -type]
+
+            if { $type_ref eq $myclass } {
+                return $prop_ref
+            }
+
+        }
+
+        return -code error "could not find one-to-many relationship between $myclass and $entity_ref"
+
+    }
+
     method __prop_get_many_to_many { prop } {
 
         set myclass [info object class [self object]]
@@ -171,15 +255,7 @@ namespace eval ::tpersist {}
         }
 
         set entity_ref $type
-        set methods [info class methods $entity_ref -all -private]
-        # Filter the method list by the __PROP__* pattern
-        set props [lsearch -all -inline -glob $methods "__PROP__*"]
-        # Cut the prefix "__PROP__"
-        set props [lmap x $props { string range $x 8 end }]
-
-        # puts "Check : $props : of : $entity_ref :"
-
-        foreach prop_ref $props {
+        foreach prop_ref [$entity_ref properties] {
 
             set opts_ref [$entity_ref property $prop_ref]
 
@@ -271,18 +347,77 @@ namespace eval ::tpersist {}
         set __primary_key__ $value
     }
 
+    method __hasPK { } {
+        my variable __primary_key__
+        return [info exists __primary_key__]
+    }
+
 }
 
 ::oo::class create ::tpersist::MixinEntity {
 
-    method get { primarykey } {
+    method get { args } {
+
+        if { ![llength $args] } {
+            return -code error "no primary key(s) specified"
+        }
+
         set myclass [self object]
+
+        # If we have multiple primary keys, then return all objects as a list
+        if { [llength $args] > 1 } {
+            return [lmap primarykey $args { $myclass get $primarykey }]
+        }
+
+        set primarykey [lindex $args 0]
+
+        # Check if we already have an object with the desired class and
+        # primary key in the session cache
+        if { ![catch [list ::tpersist::_session_get_obj $myclass $primarykey] obj] } {
+            # puts "*** Return an object from session cache: $obj"
+            return $obj
+        }
+
         set props [[my db] retrieve_object $myclass $primarykey]
+
+        # Get objects on which the current object depends
+        dict for { prop value } $props {
+
+            # skip empty values
+            if { $value eq "" } {
+                continue
+            }
+
+            set opts [my property $prop]
+
+            # skip the primary key
+            if { [dict get $opts -primarykey] } {
+                continue
+            }
+
+            # skip simple types
+            set type [dict get $opts -type]
+            if { [::tpersist::type_is_simple $type] } {
+                continue
+            }
+
+            # skip sets as for now
+            if { [dict get $opts -set] } {
+                continue
+            }
+
+            dict set props $prop [$type get $value]
+
+        }
+
         #add dashes to property keys
         set props [join [lmap { k v } $props { list -$k $v }]]
+
         set obj [my new {*}$props]
         [info object namespace $obj]::my __reset_updated
+
         return $obj
+
     }
 
     method db { } {

@@ -120,7 +120,8 @@ if { !$db_exists } {
     set s2 [Section new -name "foo"]
     set u1 [User new -created_at 123 -email "blblb@mail.com" -password foo -username john -moderates $s2]
     set p1 [Post new -title "foo" -section $s1 -author $u1 -created_at 123 -text "abcd fkj"]
-    set p2 [Post new -title "title in s2" -section $s2 -author $u1 -created_at 222 -text "msg in s2"]
+    set p2 [Post new -title "title in post2" -section $s2 -author $u1 -created_at 222 -text "msg in post2"]
+    set p3 [Post new -title "title in post3" -section $s1 -author $u1 -created_at 222 -text "msg in post3"]
 
     puts "Flush the session..."
 
@@ -137,21 +138,39 @@ puts "\nRetrieve objects..."
 
 ::tpersist::session new
 
+puts "\nRetrieve Session #1..."
 set s1 [Section get 1]
 
-puts "Session s1:"
+puts "Session s1: $s1"
 puts "  id         : [$s1 id]"
 puts "  posts      : [$s1 posts]"
 puts "  name       : [$s1 name]"
 puts "  moderators : [$s1 moderators]"
 
+puts "\nRetrieve Post #2..."
 set p2 [Post get 2]
 
-puts "Post p2:"
-puts "  id         : [$s1 id]"
-puts "  posts      : [$s1 posts]"
-puts "  name       : [$s1 name]"
-puts "  moderators : [$s1 moderators]"
+puts "Post p2: $p2"
+puts "  id           : [$p2 id]"
+puts "  title        : [$p2 title]"
+puts "  section      : [$p2 section]"
+puts "    id         : [[$p2 section] id]"
+puts "    posts      : [[$p2 section] posts]"
+puts "    name       : [[$p2 section] name]"
+puts "    moderators : [[$p2 section] moderators]"
+puts "  author       : [$p2 author]"
+puts "    id         : [[$p2 author] id]"
+puts "    created_at : [[$p2 author] created_at]"
+puts "    email      : [[$p2 author] email]"
+puts "    password   : [[$p2 author] password]"
+puts "    username   : [[$p2 author] username]"
+puts "    moderates  : [[$p2 author] moderates]"
+puts "  created_at   : [$p2 created_at]"
+puts "  text:        : [$p2 text]"
+
+puts "\nRetrieve Post #2 (again)..."
+set p22 [Post get 2]
+puts "Post p2 (again): $p22"
 
 ::tpersist::session done
 

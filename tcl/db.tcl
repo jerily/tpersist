@@ -340,21 +340,71 @@ proc ::tpersist::type_is_simple { type } {
         $db rollback
     }
 
+    method retrieve_pk_many_to_many { primarykey entity1 prop1 entity2 prop2 } {
+
+        my variable db
+
+        lassign [my helper_get_entity $entity1 $prop1 $entity2 $prop2] \
+                helper_entity helper_prop1 helper_prop2
+
+        set table [my entity_get_table $helper_entity]
+        set col_select $helper_prop2
+        set col_where $helper_prop1
+
+        set sql "SELECT $col_select FROM $table WHERE $col_where = :primarykey"
+        # puts "\[retrieve_pk_many_to_many\] sql: $sql"
+        set stmt [$db prepare $sql]
+        set rs [$stmt execute [dict create primarykey $primarykey]]
+        set result [$rs allrows -as lists]
+
+        $rs close
+        $stmt close
+
+        set result [join $result]
+        # puts "\[retrieve_pk_many_to_many\] got: $result"
+        return $result
+
+    }
+
+    method retrieve_pk_one_to_many { primarykey entity2 prop2 } {
+
+        my variable db
+
+        set entity_base [$entity2 base]
+        set table [my entity_get_table $entity_base]
+        set col_pk [$entity_base primarykey]
+        set col_ref $prop2
+
+        set sql "SELECT $col_pk FROM $table WHERE $col_ref = :primarykey"
+        # puts "\[retrieve_pk_one_to_many\] sql: $sql"
+        set stmt [$db prepare $sql]
+        set rs [$stmt execute [dict create primarykey $primarykey]]
+        set result [$rs allrows -as lists]
+
+        $rs close
+        $stmt close
+
+        set result [join $result]
+        # puts "\[retrieve_pk_one_to_many\] got: $result"
+        return $result
+
+    }
+
     method retrieve_object { entity primarykey } {
 
         my variable db
 
-        puts "retrieve entity: $entity"
+        # puts "\[retrieve_object\] retrieve entity: $entity"
 
         set entity_base [$entity base]
-        puts "base entity: $entity_base"
+        # puts "\[retrieve_object\] base entity: $entity_base"
         set table [my entity_get_table $entity_base]
 
         set columns [$entity properties]
         set col_pk [$entity primarykey]
 
         set sql "SELECT * FROM $table WHERE $col_pk = :primarykey"
-        puts "sql: $sql"
+        # puts "\[retrieve_object\] sql: $sql"
 
         set stmt [$db prepare $sql]
         set rs [$stmt execute [dict create primarykey $primarykey]]
@@ -363,8 +413,15 @@ proc ::tpersist::type_is_simple { type } {
         $rs close
         $stmt close
 
-        puts "got: [lindex $result 0]"
-        return [lindex $result 0]
+        set result [lindex $result 0]
+        # puts "\[retrieve_object\] got: $result"
+
+        # unset special key "classtype" if exists
+        if { [dict exists $result "classtype"] } {
+            dict unset result "classtype"
+        }
+
+        return $result
 
     }
 
