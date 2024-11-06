@@ -6,11 +6,20 @@ namespace eval ::tpersist {}
 
 ::oo::class create ::tpersist::Entity {
 
-    variable __table_name__ __updated__ __primary_key__
+    variable __table_name__ __updated__ __status__ __primary_key__
+
+    destructor {
+
+        if { [my __get_status] eq "dead" } {
+            puts "Destroy dead obj: [self object]"
+            return
+        }
+
+        ::tpersist::_session_del [self object]
+
+    }
 
     constructor { args } {
-
-        my variable __updated__
 
         if { [catch { dict size $args } err] } {
             return -code error "arguments are not a proper dict: $err"
@@ -32,8 +41,10 @@ namespace eval ::tpersist {}
             }
         }
 
+        my __set_status "new"
+        my __reset_updated
+
         set myprops [$entity properties]
-        set __updated__ "all"
 
         dict for { prop value } $args {
 
@@ -70,8 +81,6 @@ namespace eval ::tpersist {}
 
     method __update_set { prop } {
 
-        my variable $prop
-
         set myobj [self object]
         set myclass [info object class $myobj]
         set opts [$myclass property $prop]
@@ -103,7 +112,7 @@ namespace eval ::tpersist {}
         if { $is_many_to_many } {
             foreach linked_obj $result {
                 set helper_obj [my __link_many_to_many $myobj $prop $linked_obj $prop_ref]
-                [info object namespace $helper_obj]::my __reset_updated
+                [info object namespace $helper_obj]::my __set_status "loaded"
             }
         }
 
@@ -111,10 +120,46 @@ namespace eval ::tpersist {}
 
     }
 
+    method __prop_remove { __prop__ __value__ } {
+        my variable $__prop__
+        if { [my __prop_exists $__prop__] } {
+            if { [set __pos__ [lsearch -exact [set $__prop__] $__value__]] != -1 } {
+                my __prop_set $__prop__ [lreplace [set $__prop__] $__pos__ $__pos__]
+            }
+        }
+    }
+
+    method __prop_append { __prop__ args } {
+
+        # Make sure that we don't have the "args" variable to be able
+        # to handle the "args" property name
+        set __value__ $args
+        unset -nocomplain args
+
+        my variable $__prop__
+
+        return [lappend $__prop__ {*}$__value__]
+
+    }
+
+    method __prop_get { __prop__ } {
+        my variable $__prop__
+        return [set $__prop__]
+    }
+
+    method __prop_set { __prop__ __value__ } {
+        my variable $__prop__
+        return [set $__prop__ $__value__]
+    }
+
+    method __prop_exists { __prop__ } {
+        my variable $__prop__
+        return [info exists $__prop__]
+    }
+
     method __prop { prop {value {}} {op -set} } {
 
         my variable __updated__
-        my variable $prop
 
         set myclass [info object class [self object]]
         set opts [$myclass property $prop]
@@ -124,13 +169,13 @@ namespace eval ::tpersist {}
         if { [llength [info level 0]] == 3 } {
 
             if { [dict get $opts -set] } {
-                if { ![info exists $prop] } {
-                    set $prop [my __update_set $prop]
+                if { ![my __prop_exists $prop] } {
+                    my __prop_set $prop [my __update_set $prop]
                 }
-                return [set $prop]
+                return [my __prop_get $prop]
             }
 
-            return [expr { [info exists $prop] ? [set $prop] : "" }]
+            return [expr { [my __prop_exists $prop] ? [my __prop_get $prop] : "" }]
 
         }
 
@@ -138,7 +183,7 @@ namespace eval ::tpersist {}
 
         my __prop_validate $prop $value
 
-        if { $__updated__ ne "all" && $prop ni $__updated__ } {
+        if { [my __get_status] eq "loaded" } {
             lappend __updated__ $prop
         }
 
@@ -151,7 +196,7 @@ namespace eval ::tpersist {}
                 my __setPK $value
             }
 
-            return [set $prop $value]
+            return [my __prop_set $prop $value]
 
         }
 
@@ -168,7 +213,7 @@ namespace eval ::tpersist {}
         # if we are here, then we set a property with a many-to-many reference type
         if { $op eq "-set" } {
             # unlink all previous objects
-            if { !$is_internal && [info exists $prop] } {
+            if { !$is_internal && [my __prop_exists $prop] } {
                 foreach obj $prop {
                     $obj $prop_ref [self object] -remove_int
                 }
@@ -180,7 +225,7 @@ namespace eval ::tpersist {}
                     my __link_many_to_many [self object] $prop $obj $prop_ref
                 }
             }
-            return [set $prop $value]
+            return [my __prop_set $prop $value]
         }
 
         if { $op eq "-append" } {
@@ -191,13 +236,13 @@ namespace eval ::tpersist {}
                     my __link_many_to_many [self object] $prop $obj $prop_ref
                 }
             }
-            return [lappend $prop {*}$value]
+            return [my __prop_append $prop {*}$value]
         }
 
         if { $op eq "-remove" } {
             # double check that we are linked with the specified objects
             foreach obj $value {
-                if { ![info exists $prop] || $obj ni [set $prop] } {
+                if { ![my __prop_exists $prop] || $obj ni [my __prop_get $prop] } {
                     return -code error "object [self object] of class\
                         [info object class [self object]] is not linked with object\
                         $obj of class [info object class $obj]"
@@ -205,10 +250,9 @@ namespace eval ::tpersist {}
                 if { !$is_internal } {
                     $obj $prop_ref [self object] -remove_int
                 }
-                set pos [lsearch -exact [set $prop] $obj]
-                set $prop [lreplace [set $prop] $pos $pos]
+                my __prop_remove $prop $obj
             }
-            return [set $prop]
+            return [my __prop_get $prop]
         }
 
         return -code error "unknown op: $op"
@@ -332,6 +376,16 @@ namespace eval ::tpersist {}
         return $__updated__
     }
 
+    method __set_status { status } {
+        my variable __status__
+        set __status__ $status
+    }
+
+    method __get_status { } {
+        my variable __status__
+        return $__status__
+    }
+
     method isNull { prop } {
         my variable $prop
         return [expr { ![info exists $prop] }]
@@ -355,6 +409,20 @@ namespace eval ::tpersist {}
 }
 
 ::oo::class create ::tpersist::MixinEntity {
+
+    method get_all { } {
+        set myclass [self object]
+        set primarykeys [[my db] retrieve_pk_all $myclass]
+        switch -exact -- [llength $primarykeys] {
+            0 { return [list] }
+            1 {
+                return [list [my get [lindex $primarykeys 0]]]
+            }
+            default {
+                return [my get {*}$primarykeys]
+            }
+        }
+    }
 
     method get { args } {
 
@@ -414,7 +482,7 @@ namespace eval ::tpersist {}
         set props [join [lmap { k v } $props { list -$k $v }]]
 
         set obj [my new {*}$props]
-        [info object namespace $obj]::my __reset_updated
+        [info object namespace $obj]::my __set_status "loaded"
 
         return $obj
 
@@ -457,6 +525,11 @@ namespace eval ::tpersist {}
         set myclass [self object]
         set parent [$myclass parent]
         return [catch { $parent parent }]
+    }
+
+    method is_multiclass { } {
+        set mybase [my base]
+        return [expr { [llength [info class subclasses $mybase]] != 0 }]
     }
 
     method properties { args } {
@@ -582,7 +655,7 @@ proc ::oo::define::Optional { prop type args } {
 }
 
 proc ::oo::define::PrimaryKey { prop args } {
-    if { [llength $prop] == 1 } {
+    if { [llength [split $prop]] == 1 } {
         tailcall Property $prop {*}[lrange $args 1 end] -type [lindex $args 0] -required 1 -set 0 -primarykey 1
     } else {
         if { [llength $args] } {

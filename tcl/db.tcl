@@ -155,11 +155,6 @@ proc ::tpersist::type_is_simple { type } {
         return [expr { [$entity property [$entity primarykey] -type] eq "combined" }]
     }
 
-    method entity_is_multiclass { entity } {
-        set entity [$entity base]
-        return [expr { [llength [info class subclasses $entity]] != 0 }]
-    }
-
     method entity_get_dependencies { entity } {
         set dependencies [list]
         #puts "Data to work: [my entity_props_recursive $entity]"
@@ -191,9 +186,10 @@ proc ::tpersist::type_is_simple { type } {
             set need_to_move [list]
             foreach dependency $dependencies {
                 set pos [lsearch -exact $entities $dependency]
-                # dependency not found
+                # dependency not found, skip it
                 if { $pos == -1 } {
-                    return -code error "could not find dependency \"$dependency\" of class \"$entity\""
+                    # return -code error "could not find dependency \"$dependency\" of class \"$entity\""
+                    continue
                 }
                 # dependency already before the entity
                 if { $pos <= $i } {
@@ -376,9 +372,12 @@ proc ::tpersist::type_is_simple { type } {
         set col_ref $prop2
 
         set sql "SELECT $col_pk FROM $table WHERE $col_ref = :primarykey"
+        if { [$entity2 is_multiclass] } {
+           append sql " AND classtype = :classtype"
+        }
         # puts "\[retrieve_pk_one_to_many\] sql: $sql"
         set stmt [$db prepare $sql]
-        set rs [$stmt execute [dict create primarykey $primarykey]]
+        set rs [$stmt execute [dict create primarykey $primarykey classtype $entity2]]
         set result [$rs allrows -as lists]
 
         $rs close
@@ -386,6 +385,32 @@ proc ::tpersist::type_is_simple { type } {
 
         set result [join $result]
         # puts "\[retrieve_pk_one_to_many\] got: $result"
+        return $result
+
+    }
+
+    method retrieve_pk_all { entity } {
+
+        my variable db
+
+        set entity_base [$entity base]
+        set table [my entity_get_table $entity_base]
+        set col_pk [$entity_base primarykey]
+
+        set sql "SELECT $col_pk FROM $table"
+        if { [$entity is_multiclass] } {
+           append sql " WHERE classtype = :classtype"
+        }
+        # puts "\[retrieve_pk_all\] sql: $sql"
+        set stmt [$db prepare $sql]
+        set rs [$stmt execute [dict create classtype $entity]]
+        set result [$rs allrows -as lists]
+
+        $rs close
+        $stmt close
+
+        set result [join $result]
+        # puts "\[retrieve_pk_all\] got: $result"
         return $result
 
     }
@@ -400,25 +425,31 @@ proc ::tpersist::type_is_simple { type } {
         # puts "\[retrieve_object\] base entity: $entity_base"
         set table [my entity_get_table $entity_base]
 
-        set columns [$entity properties]
         set col_pk [$entity primarykey]
+        set columns [$entity properties]
+        # puts "\[retrieve_object\] col_pk: $col_pk"
+        # puts "\[retrieve_object\] columns: $columns"
 
         set sql "SELECT * FROM $table WHERE $col_pk = :primarykey"
         # puts "\[retrieve_object\] sql: $sql"
 
         set stmt [$db prepare $sql]
         set rs [$stmt execute [dict create primarykey $primarykey]]
-        set result [$rs allrows -as dicts]
+        set result_raw [$rs allrows -as dicts]
 
         $rs close
         $stmt close
 
-        set result [lindex $result 0]
-        # puts "\[retrieve_object\] got: $result"
+        set result_raw [lindex $result_raw 0]
+        # puts "\[retrieve_object\] got: $result_raw"
 
-        # unset special key "classtype" if exists
-        if { [dict exists $result "classtype"] } {
-            dict unset result "classtype"
+        # Filter columns and return only those that are specific to
+        # the current object
+        set result [dict create]
+        dict for { k v } $result_raw {
+            if { $k in $columns } {
+                dict set result $k $v
+            }
         }
 
         return $result
@@ -433,7 +464,27 @@ proc ::tpersist::type_is_simple { type } {
         set entity [info object class $obj]
         set props_own [my entity_props $entity]
         set entity_base [$entity base]
-        set pk ""
+        set table [my entity_get_table $entity_base]
+
+        set primarykey_name [$entity_base primarykey]
+        # don't use combined primary keys
+        if { [llength [split $primarykey_name]] > 1 } {
+            set primarykey_name ""
+        }
+
+        switch -exact -- [set status [[info object namespace $obj]::my __get_status]] {
+            "new" {
+                set props_to_update [$entity properties]
+                set primarykey ""
+            }
+            "loaded" {
+                set props_to_update [[info object namespace $obj]::my __get_updated]
+                set primarykey [$obj getPK]
+            }
+            default {
+                return -code error "could not commit object with status: $status"
+            }
+        }
 
         # puts "COMMIT entity: $entity"
         # puts "COMMIT entity_base: $entity_base"
@@ -443,18 +494,16 @@ proc ::tpersist::type_is_simple { type } {
 
         foreach { entity_prop prop } [my entity_props_recursive $entity_base] {
 
-            # Skip properties that are foreign to the entity of the object
-            if { [lsearch -exact $props_own $prop] == -1 } {
+            # Skip properties that are foreign to the entity of the object,
+            # or properties that we don't need to update
+            if { $prop ni $props_to_update } {
                 continue
             }
 
             set opts [my entity_prop_opts $entity_prop $prop]
 
-            # Skip primary keys as for now
+            # Skip primary key
             if { [dict get $opts -primarykey] } {
-                if { [dict get $opts -type] ne "combined" } {
-                    set pk [dict get $opts -name]
-                }
                 continue
             }
 
@@ -480,14 +529,22 @@ proc ::tpersist::type_is_simple { type } {
 
         }
 
+        if { ![llength $columns] } {
+            return -code error "something is wrong, there are no columns to insert or update"
+        }
+
         if { [llength [info class subclasses $entity_base]] } {
             lappend columns "classtype"
             lappend values $entity
         }
 
-        set pk [my commit_object [my entity_get_table $entity_base] $columns $values $pk]
-        if { $pk ne "" } {
-            [info object namespace $obj]::my __setPK $pk
+        if { $primarykey eq "" } {
+            set pk [my commit_object $table $columns $values $primarykey_name ""]
+            if { $pk ne "" } {
+                [info object namespace $obj]::my __setPK $pk
+            }
+        } else {
+            my commit_object $table $columns $values $primarykey_name $primarykey
         }
 
     }

@@ -40,6 +40,7 @@ proc ::tpersist::session { action } {
         if { $action eq "done" } {
             uplevel 1 [list trace remove variable $session_var unset [list ::tpersist::session::_trace_unset $session_ns]]
             uplevel 1 [list ::tpersist::_session_commit $session_ns]
+            uplevel 1 [list ::tpersist::_session_cleanup $session_ns]
             tailcall unset $session_var
         }
 
@@ -89,6 +90,23 @@ proc ::tpersist::session::_trace_unset { session_ns args } {
 
 }
 
+proc ::tpersist::_session_cleanup { session_ns } {
+
+    puts "*** Cleanup session: $session_ns"
+
+    upvar #0 ${session_ns}::objs objs
+
+    if { [info exists objs] } {
+        foreach obj $objs {
+            [info object namespace $obj]::my __set_status "dead"
+            $obj destroy
+        }
+    }
+
+    namespace delete $session_ns
+
+}
+
 proc ::tpersist::_session_commit { session_ns } {
 
     puts "*** Commit changes from session: $session_ns"
@@ -100,20 +118,30 @@ proc ::tpersist::_session_commit { session_ns } {
         return
     }
 
-    puts "*** Created/updated objects: $objs"
-
     # split objects by databases
     set dbmap [dict create]
     foreach obj $objs {
 
-        set updated [[info object namespace $obj]::my __get_updated]
-        if { ![llength $updated] } {
-            puts "*** Skip not updated object: $obj"
-            continue
-        }
+        switch -exact -- [set status [[info object namespace $obj]::my __get_status]] {
+            "new" {
+                puts "*** Created object: $obj"
+            }
+            "loaded" {
+                if { [llength [[info object namespace $obj]::my __get_updated]] } {
+                    puts "*** Updated object: $obj"
+                } else {
+                    puts "*** Skip not updated object: $obj"
+                    continue
+                }
 
-        if { $updated ne "all" } {
-            return -code error "updating of individual properties has not yet been implemented"
+            }
+            "dead" {
+                puts "*** Dead object: $obj"
+                continue
+            }
+            default {
+                return -code error "unknown object status: $status"
+            }
         }
 
         set db [[info object class $obj] db]
@@ -154,10 +182,14 @@ proc ::tpersist::_session_commit { session_ns } {
 
     }
 
-    unset objs
-
     if { $error } {
         return -options $erropts $errmsg
+    }
+
+    # Mark all objects as "not modified" if everything has been successfully
+    # sent to db
+    foreach obj [join [dict values $dbmap]] {
+        [info object namespace $obj]::my __reset_updated
     }
 
 }
@@ -184,6 +216,44 @@ proc ::tpersist::_session_add { object } {
     }
 
     lappend objs $object
+
+}
+
+proc ::tpersist::_session_del { object } {
+
+    set session_ns [_session_active]
+    if { $session_ns eq "" } {
+        return -code error "session is required when working with the database"
+    }
+
+    upvar #0 "${session_ns}::objs" objs
+    set pos [lsearch -exact $objs $object]
+    if { $pos == -1 } {
+        return -code error "object $object is not registered in the active session"
+    }
+    set objs [lreplace $objs $pos $pos]
+
+    if { [[info object namespace $object]::my __hasPK] } {
+
+        upvar #0 "${session_ns}::index" index
+
+        set class [info object class $object]
+        set pk    [$object getPK]
+        dict unset index $class $pk
+
+    }
+
+    if { [set status [[info object namespace $object]::my __get_status]] in {dead new} } {
+        # Nothing to do with database for new/dead objects
+        return
+    }
+
+    if { $status ne "loaded" } {
+        return -code error "unknown object status: $status"
+    }
+
+    # If we are here, then $status is "loaded" which means we have to
+    # delete the object from the database
 
 }
 

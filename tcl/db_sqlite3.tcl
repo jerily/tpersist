@@ -101,7 +101,7 @@ namespace eval ::tpersist {}
                 }
             }
 
-            if { [my entity_is_multiclass $entity] } {
+            if { [$entity is_multiclass] } {
 
                 lappend output "  \"classtype\" TEXT NOT NULL"
 
@@ -177,33 +177,57 @@ namespace eval ::tpersist {}
 
     }
 
-    method commit_object { table columns values pk } {
+    method commit_object { table columns values primarykey_name primarykey_value } {
 
         my variable db
 
-        set columns [join $columns ","]
         set placeholders [my get_values_placeholders $values]
-        set placeholders [join $placeholders ","]
+        set values       [my get_values_dict $values]
 
-        set sql "INSERT INTO %s(%s) VALUES (%s)"
-        if { $pk ne "" } {
-            append sql " RETURNING $pk"
+        if { $primarykey_value eq "" } {
+
+            set columns      [join $columns ","]
+            set placeholders [join $placeholders ","]
+
+            set sql "INSERT INTO %s(%s) VALUES (%s)"
+            set sql [format $sql $table $columns $placeholders]
+
+            if { $primarykey_name ne "" } {
+                append sql " RETURNING $primarykey_name"
+            }
+
+        } else {
+
+            # puts "colm: $columns"
+            # puts "ph: $placeholders"
+            set columns_to_update [lmap column $columns placeholder $placeholders {
+                list "$column = $placeholder"
+            }]
+            # puts "before join: $columns_to_update"
+            set columns_to_update [join [join $columns_to_update] ", "]
+            # puts "after join: $columns_to_update"
+
+            set sql "UPDATE %s SET %s WHERE $primarykey_name = :__primarykey__"
+            set sql [format $sql $table $columns_to_update]
+
+            dict set values "__primarykey__" $primarykey_value
+
         }
-        set sql [format $sql $table $columns $placeholders]
+
         set stmt [$db prepare $sql]
-        #puts "SQL: $sql"
-        #puts "data: [my get_values_dict $values]"
-        set rs [$stmt execute [my get_values_dict $values]]
+        # puts "SQL: $sql"
+        # puts "data: $values"
+        set rs [$stmt execute $values]
         set result [$rs allrows]
 
         $rs close
         $stmt close
 
-        if { $pk eq "" } {
+        if { $primarykey_name ne "" && $primarykey_value eq "" } {
+            return [dict get [lindex $result 0] $primarykey_name]
+        } else {
             return ""
         }
-
-        return [dict get [lindex $result 0] $pk]
 
     }
 
