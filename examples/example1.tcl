@@ -9,7 +9,7 @@ package require tpersist
 
 #puts "Create DB..."
 
-set db_file "demo.sqlite3"
+set db_file "example1.sqlite3"
 # set db_file ":memory:"
 
 set db_exists [file exists $db_file]
@@ -69,7 +69,7 @@ oo::class create Section {
 
     PrimaryKey id         integer -auto 1
     Set        posts      Post
-    Required   name       string
+    Required   name       string -unique 1
     Set        moderators User
 }
 
@@ -117,8 +117,9 @@ if { !$db_exists } {
     puts "Create objects..."
 
     set s1 [Section new -name "bar"]
-    set s2 [Section new -name "foo"]
+    set s2 [Section new -name "foo1"]
     set s3 [Section new -name "baz"]
+    set s2 [Section new -name "foo2"]
     set u1 [User new -created_at 123 -email "blblb@mail.com" -password foo -username john -moderates [list $s2 $s3]]
     set p1 [Post new -title "foo" -section $s1 -author $u1 -created_at 123 -text "abcd fkj"]
     set p2 [Post new -title "title in post2" -section $s2 -author $u1 -created_at 222 -text "msg in post2"]
@@ -201,7 +202,7 @@ puts "\nRetrieve Session #2...\n"
 
 # Check to see how the user is updated
 
-set sections [Section get_all]
+set sections [Section select]
 puts "Sections: $sections"
 
 set u1 [User get 1]
@@ -218,7 +219,7 @@ puts "\nNew Session #3...\n"
 
 # Set values via relationships
 
-set messages [Message get_all]
+set messages [Message select]
 puts "Messages: $messages"
 set m1 [lindex $messages 0]
 puts "Message m1: $m1"
@@ -238,7 +239,7 @@ puts "\nNew Session #4...\n"
 
 # Check values via relationships
 
-set messages [Message get_all]
+set messages [Message select]
 puts "Messages: $messages"
 set m1 [lindex $messages 0]
 puts "Message m1: $m1"
@@ -255,19 +256,21 @@ puts "\nNew Session #5...\n"
 ::tpersist::session new
 
 # Here we will remove objects/rows from database.
-# In this session, we will create a new section object named "section for removal"
-# which we will delete in subsequent sessions. However, let's not create
-# a new section if we already have a section with that name.
+# In this session, we will create 2 new section objects named "section for removal"
+# and "section for removal alt" which we will delete in subsequent sessions.
+# However, let's not create a new section if we already have a section with that name.
 
-set section_objs [Section get_all]
+set section_objs [Section select]
 set section_dict [join [lmap s $section_objs { list [$s name] $s }]]
 puts "Sections: $section_dict"
 
-if { ![dict exists $section_dict "section for removal"] } {
-    puts "Add new section: \"section for removal\""
-    Section new -name "section for removal"
-} else {
-    puts "Use existing section: \"section for removal\""
+foreach name [list "section for removal" "section for removal alt"] {
+    if { ![dict exists $section_dict $name] } {
+        puts "Add new section: '$name'"
+        Section new -name $name
+    } else {
+        puts "Use existing section: '$name'"
+    }
 }
 
 ::tpersist::session done
@@ -275,23 +278,261 @@ if { ![dict exists $section_dict "section for removal"] } {
 puts "\nNew Session #6...\n"
 ::tpersist::session new
 
-# Remove object/row from database.
+# In this session we will add a moderator to the section
 
-set section_objs [Section get_all]
+set section_objs [Section select]
 set section_dict [join [lmap s $section_objs { list [$s name] $s }]]
 puts "Sections: $section_dict"
-puts "Destroy object: [dict get $section_dict "section for removal"]"
-[dict get $section_dict "section for removal"] destroy
+
+set sX [dict get $section_dict "section for removal"]
+puts "Section: $sX ([$sX name])"
+puts "   moderators: [$sX moderators]"
+
+set u1 [User get 1]
+puts "User: $u1 ([$u1 username])"
+puts "   moderates: [$u1 moderates]"
+
+if { $u1 ni [$sX moderators] } {
+
+    puts "Add a moderator to the section"
+    $sX moderators $u1 -append
+
+    puts "Section: $sX ([$sX name])"
+    puts "   moderators: [$sX moderators]"
+
+    set u1 [User get 1]
+    puts "User: $u1 ([$u1 username])"
+    puts "   moderates: [$u1 moderates]"
+
+} else {
+    puts "The user is already a moderator of the section"
+}
 
 ::tpersist::session done
 
 puts "\nNew Session #7...\n"
 ::tpersist::session new
 
-# Check that we don't have the section in the database.
+# In this session we will check if the new moderator is correctly added to the section.
+# After that, we will remove the new moderator from the section.
 
-set section_objs [Section get_all]
+set section_objs [Section select]
 set section_dict [join [lmap s $section_objs { list [$s name] $s }]]
 puts "Sections: $section_dict"
+
+set sX [dict get $section_dict "section for removal"]
+puts "Section: $sX ([$sX name])"
+puts "   moderators: [$sX moderators]"
+
+set u1 [User get 1]
+puts "User: $u1 ([$u1 username])"
+puts "   moderates: [$u1 moderates]"
+
+puts "Remove the moderator from the section"
+$sX moderators $u1 -remove
+
+puts "Section: $sX ([$sX name])"
+puts "   moderators: [$sX moderators]"
+puts "User: $u1 ([$u1 username])"
+puts "   moderates: [$u1 moderates]"
+
+::tpersist::session done
+
+puts "\nNew Session #8...\n"
+::tpersist::session new
+
+# In this session we will check if the new moderator is correctly removed from the section.
+
+set section_objs [Section select]
+set section_dict [join [lmap s $section_objs { list [$s name] $s }]]
+puts "Sections: $section_dict"
+
+set sX [dict get $section_dict "section for removal"]
+puts "Section: $sX ([$sX name])"
+puts "   moderators: [$sX moderators]"
+
+set u1 [User get 1]
+puts "User: $u1 ([$u1 username])"
+puts "   moderates: [$u1 moderates]"
+
+::tpersist::session done
+
+puts "\nNew Session #9...\n"
+::tpersist::session new
+
+# In this session we will add a section to the user
+
+set section_objs [Section select]
+set section_dict [join [lmap s $section_objs { list [$s name] $s }]]
+puts "Sections: $section_dict"
+
+set sX [dict get $section_dict "section for removal alt"]
+puts "Section: $sX ([$sX name])"
+puts "   moderators: [$sX moderators]"
+
+set u1 [User get 1]
+puts "User: $u1 ([$u1 username])"
+puts "   moderates: [$u1 moderates]"
+
+if { $sX ni [$u1 moderates] } {
+
+    puts "Add a section to the user"
+    $u1 moderates $sX -append
+
+    puts "Section: $sX ([$sX name])"
+    puts "   moderators: [$sX moderators]"
+
+    set u1 [User get 1]
+    puts "User: $u1 ([$u1 username])"
+    puts "   moderates: [$u1 moderates]"
+
+} else {
+    puts "The section is already added to the user"
+}
+
+::tpersist::session done
+
+puts "\nNew Session #10...\n"
+::tpersist::session new
+
+# In this session we will check if the section is correctly added to the user.
+# After that, we will remove the new section from the user.
+
+set section_objs [Section select]
+set section_dict [join [lmap s $section_objs { list [$s name] $s }]]
+puts "Sections: $section_dict"
+
+set sX [dict get $section_dict "section for removal alt"]
+puts "Section: $sX ([$sX name])"
+puts "   moderators: [$sX moderators]"
+
+set u1 [User get 1]
+puts "User: $u1 ([$u1 username])"
+puts "   moderates: [$u1 moderates]"
+
+puts "Remove the section from the user"
+$u1 moderates $sX -remove
+
+puts "Section: $sX ([$sX name])"
+puts "   moderators: [$sX moderators]"
+puts "User: $u1 ([$u1 username])"
+puts "   moderates: [$u1 moderates]"
+
+::tpersist::session done
+
+puts "\nNew Session #11...\n"
+::tpersist::session new
+
+# In this session we will check if the new section is correctly removed from the user.
+
+set section_objs [Section select]
+set section_dict [join [lmap s $section_objs { list [$s name] $s }]]
+puts "Sections: $section_dict"
+
+set sX [dict get $section_dict "section for removal alt"]
+puts "Section: $sX ([$sX name])"
+puts "   moderators: [$sX moderators]"
+
+set u1 [User get 1]
+puts "User: $u1 ([$u1 username])"
+puts "   moderates: [$u1 moderates]"
+
+::tpersist::session done
+
+puts "\nNew Session #12...\n"
+::tpersist::session new
+
+# In this session we link 2 section with 1 user
+
+set section_objs [Section select]
+set section_dict [join [lmap s $section_objs { list [$s name] $s }]]
+puts "Sections: $section_dict"
+
+set sX1 [dict get $section_dict "section for removal"]
+puts "Section: $sX1 ([$sX1 name])"
+puts "   moderators: [$sX1 moderators]"
+set sX2 [dict get $section_dict "section for removal alt"]
+puts "Section: $sX2 ([$sX2 name])"
+puts "   moderators: [$sX2 moderators]"
+
+set u1 [User get 1]
+puts "User: $u1 ([$u1 username])"
+puts "   moderates: [$u1 moderates]"
+
+puts "Add 2 sections to the user"
+$u1 moderates $sX1 -append
+$u1 moderates $sX2 -append
+
+puts "Section: $sX1 ([$sX1 name])"
+puts "   moderators: [$sX1 moderators]"
+puts "Section: $sX2 ([$sX2 name])"
+puts "   moderators: [$sX2 moderators]"
+puts "User: $u1 ([$u1 username])"
+puts "   moderates: [$u1 moderates]"
+
+::tpersist::session done
+
+puts "\nNew Session #13...\n"
+::tpersist::session new
+
+# In this session we check that 2 section are linked with the user.
+# After that, we delete these 2 sections from database.
+
+set section_objs [Section select]
+set section_dict [join [lmap s $section_objs { list [$s name] $s }]]
+puts "Sections: $section_dict"
+
+set sX1 [dict get $section_dict "section for removal"]
+puts "Section: $sX1 ([$sX1 name])"
+puts "   moderators: [$sX1 moderators]"
+set sX2 [dict get $section_dict "section for removal alt"]
+puts "Section: $sX2 ([$sX2 name])"
+puts "   moderators: [$sX2 moderators]"
+
+set u1 [User get 1]
+puts "User: $u1 ([$u1 username])"
+puts "   moderates: [$u1 moderates]"
+
+puts "Destroy 2 sections"
+$sX1 destroy
+$sX2 destroy
+
+puts "User: $u1 ([$u1 username])"
+puts "   moderates: [$u1 moderates]"
+
+::tpersist::session done
+
+puts "\nNew Session #14...\n"
+::tpersist::session new
+
+# In this session we check that 2 section are deleted.
+
+set section_objs [Section select]
+set section_dict [join [lmap s $section_objs { list [$s name] $s }]]
+puts "Sections: $section_dict"
+
+set u1 [User get 1]
+puts "User: $u1 ([$u1 username])"
+puts "   moderates: [$u1 moderates]"
+
+::tpersist::session done
+
+puts "\nNew Session #15...\n"
+::tpersist::session new
+
+# In this session we check object selection
+
+set section_objs [Section select {name LIKE :pattern} [dict create pattern "foo%"]]
+set section_dict [join [lmap s $section_objs { list [$s name] $s }]]
+puts "Sections: $section_dict"
+
+::tpersist::session done
+
+puts "\nNew Session #16...\n"
+::tpersist::session new
+
+# In this session we will try to add a section with a duplicate name
+
+set sX [Section new -name "bar"]
 
 ::tpersist::session done

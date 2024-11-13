@@ -8,6 +8,20 @@ namespace eval ::tpersist {}
 
     superclass ::tpersist::Database
 
+    method initialize { } {
+
+        my variable db
+
+        # Enable Foreign Key Constraints as they are not enabled in sqlite3
+        # by default
+        set sql "PRAGMA foreign_keys=on"
+        set stmt [$db prepare $sql]
+        set rs [$stmt execute [dict create]]
+        $rs close
+        $stmt close
+
+    }
+
     method prop_type2sql { type } {
         switch -exact -- $type {
             "string"   { return "TEXT" }
@@ -80,7 +94,7 @@ namespace eval ::tpersist {}
 
             set output [list]
 
-            set is_primarykey_combined [my entity_is_primarykey_combined $entity]
+            set is_primarykey_combined [$entity is_primarykey_combined]
 
             # primary key
             if { !$is_primarykey_combined } {
@@ -89,8 +103,7 @@ namespace eval ::tpersist {}
             }
 
             # other fields
-            foreach prop [my entity_props_own $entity] {
-                set opts [my entity_prop_opts $entity $prop]
+            foreach opts [$entity properties -own -options] {
                 # skip the primary key
                 if { [dict get $opts -primarykey] } {
                     continue
@@ -122,8 +135,8 @@ namespace eval ::tpersist {}
                 }
 
                 foreach child $children {
-                    foreach prop [my entity_props_own $child] {
-                        set add [my prop_mapping [my entity_prop_opts $child $prop]]
+                    foreach prop [$child properties -own] {
+                        set add [my prop_mapping [$child property $prop]]
                         if { $add ne "" } {
                             lappend output $add
                         }
@@ -149,7 +162,7 @@ namespace eval ::tpersist {}
                 ")"]
 
             set sql [join $sql \n]
-            #puts "prepare SQL: \[$sql\]"
+            # puts "prepare SQL: \[$sql\]"
             set stmt [$db prepare $sql]
             set rs [$stmt execute [list]]
             set result [$rs allrows]
@@ -177,7 +190,54 @@ namespace eval ::tpersist {}
 
     }
 
-    method commit_object { table columns values primarykey_name primarykey_value } {
+    method delete_objects_simple { table column values } {
+
+        my variable db
+
+        set placeholders [my get_values_placeholders $values]
+        set placeholders [join $placeholders ","]
+        set values       [my get_values_dict $values]
+
+        set sql "DELETE FROM %s WHERE %s IN (%s)"
+        set sql [format $sql $table $column $placeholders]
+
+        set stmt [$db prepare $sql]
+        # puts "SQL: $sql"
+        # puts "data: $values"
+        set rs [$stmt execute $values]
+
+        $rs close
+        $stmt close
+
+    }
+
+    method delete_object { table columns values } {
+
+        my variable db
+
+        set placeholders [my get_values_placeholders $values]
+        set values       [my get_values_dict $values]
+
+        set where [lmap column $columns placeholder $placeholders {
+            list "$column = $placeholder"
+        }]
+
+        set where [join [join $where] " AND "]
+
+        set sql "DELETE FROM %s WHERE %s"
+        set sql [format $sql $table $where]
+
+        set stmt [$db prepare $sql]
+        # puts "SQL: $sql"
+        # puts "data: $values"
+        set rs [$stmt execute $values]
+
+        $rs close
+        $stmt close
+
+    }
+
+    method commit_object { table columns columns_unique values primarykey_name primarykey_value } {
 
         my variable db
 
@@ -191,6 +251,18 @@ namespace eval ::tpersist {}
 
             set sql "INSERT INTO %s(%s) VALUES (%s)"
             set sql [format $sql $table $columns $placeholders]
+
+            if { [llength $columns_unique] } {
+
+                set columns_unique [join $columns_unique ","]
+                set columns_update [lmap column $columns {
+                    list "$column = excluded.$column"
+                }]
+                set columns_update [join [join $columns_update] ", "]
+
+                append sql " ON CONFLICT($columns_unique) DO UPDATE SET $columns_update"
+
+            }
 
             if { $primarykey_name ne "" } {
                 append sql " RETURNING $primarykey_name"
@@ -215,10 +287,11 @@ namespace eval ::tpersist {}
         }
 
         set stmt [$db prepare $sql]
-        # puts "SQL: $sql"
-        # puts "data: $values"
+        #puts "SQL: $sql"
+        #puts "data: $values"
         set rs [$stmt execute $values]
         set result [$rs allrows]
+        #puts "result: $result"
 
         $rs close
         $stmt close

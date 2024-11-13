@@ -46,6 +46,12 @@ proc ::tpersist::type_is_simple { type } {
         ::oo::define $entityclass superclass ::tpersist::Entity
         ::oo::objdefine $entityclass method db {} [list return [self object]]
 
+        my initialize
+
+    }
+
+    method initialize { } {
+        # no-op by default
     }
 
     method entityclass { } {
@@ -58,61 +64,13 @@ proc ::tpersist::type_is_simple { type } {
         return [info class subclasses $entityclass]
     }
 
-    method _entity_methods2props { methods } {
-        # Filter the method list by the __PROP__* pattern
-        set props [lsearch -all -inline -glob $methods "__PROP__*"]
-        # Cut the prefix "__PROP__"
-        set props [lmap x $props { string range $x 8 end }]
-        return $props
-    }
-
-    method entity_props_own { entity } {
-        # Get all methods of the class
-        set methods [info class methods $entity -private]
-        return [my _entity_methods2props $methods]
-    }
-
-    method entity_props { entity } {
-        my variable entityclass
-        set props [list]
-        while 1 {
-            # Get all methods of the class
-            set props [concat [my entity_props_own $entity] $props]
-            if { [my entity_is_base $entity] } {
-                return $props
-            }
-            set entity [lindex [info class superclasses $entity] 0]
-            if { $entity eq "::oo::object" } {
-                return -code error "class doesn't belong to this database"
-            }
-        }
-    }
-
-    method entity_props_recursive { entity } {
-        set result [list]
-        #puts "Get recursive: $entity"
-        set entities [list [$entity base]]
-        #puts "Entities: $entities"
-        while { [llength $entities] } {
-            set entity [lindex $entities 0]
-            set entities [lrange $entities 1 end]
-            lappend entities {*}[info class subclasses $entity]
-            foreach prop [my entity_props_own $entity] {
-                #puts "Lappend $entity - $prop"
-                lappend result $entity $prop
-            }
-        }
-        return $result
-    }
-
     method entity_get_indexes { entity } {
         set result [list]
-        if { [my entity_is_primarykey_combined $entity] } {
+        if { [$entity is_primarykey_combined] } {
             return $result
         }
         set entity_base [$entity base]
-        foreach { entity prop } [my entity_props_recursive $entity_base] {
-            set opts [my entity_prop_opts $entity $prop]
+        foreach opts [$entity_base properties -all -options] {
             if { [::tpersist::type_is_simple [dict get $opts -type]] } {
                 continue
             }
@@ -124,18 +82,8 @@ proc ::tpersist::type_is_simple { type } {
         return $result
     }
 
-    method entity_prop_opts { entity prop } {
-        set options [lindex [info class definition $entity "__PROP__$prop"] 0]
-        dict set options -base [my entity_is_base $entity]
-    }
-
     method entity_prop_column { entity prop } {
-        return [dict get [my entity_prop_opts $entity $prop] -name]
-    }
-
-    method entity_is_base { entity } {
-        my variable entityclass
-        return [$entity is_base]
+        return [$entity property $prop -name]
     }
 
     method entity_get_table { entity } {
@@ -151,16 +99,10 @@ proc ::tpersist::type_is_simple { type } {
         return "\"$name\""
     }
 
-    method entity_is_primarykey_combined { entity } {
-        return [expr { [$entity property [$entity primarykey] -type] eq "combined" }]
-    }
-
     method entity_get_dependencies { entity } {
         set dependencies [list]
-        #puts "Data to work: [my entity_props_recursive $entity]"
-        foreach { entity prop } [my entity_props_recursive $entity] {
-            set opts [my entity_prop_opts $entity $prop]
-            #puts "Check entity: $entity -> $prop -> $opts"
+        foreach opts [$entity properties -all -options] {
+            #puts "Check entity: $opts"
             if { [::tpersist::type_is_simple [dict get $opts -type]] } {
                 continue
             }
@@ -225,8 +167,7 @@ proc ::tpersist::type_is_simple { type } {
         }
         set processed [list]
         foreach { entity_base } $entities {
-            foreach { entity prop } [my entity_props_recursive $entity_base] {
-                set opts [my entity_prop_opts $entity $prop]
+            foreach opts [$entity_base properties -all -options] {
                 if { [::tpersist::type_is_simple [dict get $opts -type]] } {
                     continue
                 }
@@ -241,8 +182,7 @@ proc ::tpersist::type_is_simple { type } {
                     continue
                 }
                 set need_many_to_many -1
-                foreach { prop_ref_entity prop_ref } [my entity_props_recursive $entity_ref] {
-                    set opts_ref [my entity_prop_opts $prop_ref_entity $prop_ref]
+                foreach opts_ref [$entity_ref properties -all -options] {
                     set type [dict get $opts_ref -type]
                     if { [::tpersist::type_is_simple $type] } {
                         continue
@@ -264,7 +204,9 @@ proc ::tpersist::type_is_simple { type } {
                 if { !$need_many_to_many } {
                     continue
                 }
-                lappend result $entity $prop $prop_ref_entity $prop_ref
+                lappend result \
+                    [dict get $opts -entity]     [dict get $opts -name] \
+                    [dict get $opts_ref -entity] [dict get $opts_ref -name]
             }
             lappend processed $entity_base
         }
@@ -317,6 +259,24 @@ proc ::tpersist::type_is_simple { type } {
             foreach obj [dict get $entities_map $entity] {
                 my commit_object_prepare $obj
             }
+        }
+
+    }
+
+    method delete_objects { classes } {
+
+        set entities_map [list]
+        dict for { entity pks } $classes {
+            set entity [$entity base]
+            dict lappend entities_map $entity {*}$pks
+        }
+
+        # sort entities according their internal dependencies
+        set entities [my entities_sort [dict keys $entities_map]]
+
+        # delete entities by their types
+        foreach entity $entities {
+            my delete_objects_prepare $entity [dict get $entities_map $entity]
         }
 
     }
@@ -389,7 +349,7 @@ proc ::tpersist::type_is_simple { type } {
 
     }
 
-    method retrieve_pk_all { entity } {
+    method retrieve_pk_select { entity where values } {
 
         my variable db
 
@@ -400,17 +360,23 @@ proc ::tpersist::type_is_simple { type } {
         set sql "SELECT $col_pk FROM $table"
         if { [$entity is_multiclass] } {
            append sql " WHERE classtype = :classtype"
+           dict set values "classtype" $entity
+           if { $where ne "" } {
+               append sql " AND $where"
+           }
+        } elseif { $where ne "" } {
+            append sql " WHERE $where"
         }
-        # puts "\[retrieve_pk_all\] sql: $sql"
+        # puts "\[retrieve_pk_select\] sql: $sql"
         set stmt [$db prepare $sql]
-        set rs [$stmt execute [dict create classtype $entity]]
+        set rs [$stmt execute $values]
         set result [$rs allrows -as lists]
 
         $rs close
         $stmt close
 
         set result [join $result]
-        # puts "\[retrieve_pk_all\] got: $result"
+        # puts "\[retrieve_pk_select\] got: $result"
         return $result
 
     }
@@ -440,6 +406,17 @@ proc ::tpersist::type_is_simple { type } {
         $rs close
         $stmt close
 
+        if { ![llength $result_raw] } {
+            return -code error "unable to retrieve the $entity entity (table '$table') with\
+                primary key (column '$col_pk') as '$primarykey'"
+        }
+
+        if { [llength $result_raw] > 1 } {
+            # only one row is expected
+            return -code error "got [llength $result_raw] rows of the $entity entity\
+                (table '$table') with primary key (column '$col_pk') as '$primarykey'"
+        }
+
         set result_raw [lindex $result_raw 0]
         # puts "\[retrieve_object\] got: $result_raw"
 
@@ -456,17 +433,35 @@ proc ::tpersist::type_is_simple { type } {
 
     }
 
-    method commit_object_prepare { obj } {
-
-        set columns      [list]
-        set values       [list]
-
-        set entity [info object class $obj]
-        set props_own [my entity_props $entity]
-        set entity_base [$entity base]
-        set table [my entity_get_table $entity_base]
+    method delete_objects_prepare { entity_base pks } {
 
         set primarykey_name [$entity_base primarykey]
+        set table [my entity_get_table $entity_base]
+
+        if { [$entity_base is_primarykey_combined] } {
+
+            foreach criteria $pks {
+                my delete_object $table [dict keys $criteria] [dict values $criteria]
+            }
+
+        } else {
+            my delete_objects_simple $table $primarykey_name $pks
+        }
+
+    }
+
+    method commit_object_prepare { obj } {
+
+        set columns        [list]
+        set columns_unique [list]
+        set values         [list]
+
+        set entity          [info object class $obj]
+        set props_own       [$entity properties]
+        set entity_base     [$entity base]
+        set table           [my entity_get_table $entity_base]
+        set primarykey_name [$entity_base primarykey]
+
         # don't use combined primary keys
         if { [llength [split $primarykey_name]] > 1 } {
             set primarykey_name ""
@@ -492,15 +487,15 @@ proc ::tpersist::type_is_simple { type } {
         # puts "OBJ $obj vars1: [info object variables $obj]"
         # puts "OBJ $obj vars2: [info object vars $obj]"
 
-        foreach { entity_prop prop } [my entity_props_recursive $entity_base] {
+        foreach opts [$entity_base properties -all -options] {
+
+            set prop [dict get $opts -name]
 
             # Skip properties that are foreign to the entity of the object,
             # or properties that we don't need to update
             if { $prop ni $props_to_update } {
                 continue
             }
-
-            set opts [my entity_prop_opts $entity_prop $prop]
 
             # Skip primary key
             if { [dict get $opts -primarykey] } {
@@ -524,7 +519,13 @@ proc ::tpersist::type_is_simple { type } {
                 set value [[$obj $prop] getPK]
             }
 
-            lappend columns [my entity_prop_column $entity_prop $prop]
+            set column [my entity_prop_column [dict get $opts -entity] $prop]
+            lappend columns $column
+
+            if { [dict get $opts -unique] } {
+                lappend columns_unique $column
+            }
+
             lappend values $value
 
         }
@@ -539,12 +540,12 @@ proc ::tpersist::type_is_simple { type } {
         }
 
         if { $primarykey eq "" } {
-            set pk [my commit_object $table $columns $values $primarykey_name ""]
+            set pk [my commit_object $table $columns $columns_unique $values $primarykey_name ""]
             if { $pk ne "" } {
                 [info object namespace $obj]::my __setPK $pk
             }
         } else {
-            my commit_object $table $columns $values $primarykey_name $primarykey
+            my commit_object $table $columns $columns_unique $values $primarykey_name $primarykey
         }
 
     }

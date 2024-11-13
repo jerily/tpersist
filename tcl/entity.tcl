@@ -11,8 +11,24 @@ namespace eval ::tpersist {}
     destructor {
 
         if { [my __get_status] eq "dead" } {
-            puts "Destroy dead obj: [self object]"
+            #puts "Destroy dead obj: [self object]"
             return
+        }
+
+        # In case of many-to-many relationship, we need to remove this object
+        # from the linked objects. In order to do that, we will go through all
+        # properties. For many-to-many properties, we will set them to empty
+        # list. This will remove this object from the linked objects.
+
+        set entity [info object class [self object]]
+        foreach prop [$entity properties] {
+            set prop_ref [my __prop_get_many_to_many $prop]
+            # prop_ref is not empty only if the property has many-to-many
+            # relationships.
+            if { $prop_ref ne "" } {
+                # Set the property as an empty list
+                my $prop [list] -set
+            }
         }
 
         ::tpersist::_session_del [self object]
@@ -76,6 +92,27 @@ namespace eval ::tpersist {}
         # puts "Link $obj1 $prop1 -> $obj2 $prop2 -> $helper_entity"
 
         return [$helper_entity new -$helper_prop1 $obj1 -$helper_prop2 $obj2]
+
+    }
+
+    method __unlink_many_to_many { obj1 prop1 obj2 prop2 } {
+
+        set myclass [info object class [self object]]
+
+        lassign [[$myclass db] helper_get_entity [info object class $obj1] $prop1 [info object class $obj2] $prop2] \
+                helper_entity helper_prop1 helper_prop2
+
+        # puts "Unlink $obj1 $prop1 -> $obj2 $prop2 -> $helper_entity"
+
+        foreach obj [info class instances $helper_entity] {
+            if { [$obj $helper_prop1] eq $obj1 && [$obj $helper_prop2] eq $obj2 } {
+                $obj destroy
+                return
+            }
+        }
+
+        return -code error "could not find instance of helper entity $helper_entity\
+            that links $obj1->$prop1 and $obj2->$prop2"
 
     }
 
@@ -183,17 +220,23 @@ namespace eval ::tpersist {}
 
         my __prop_validate $prop $value
 
-        if { [my __get_status] eq "loaded" } {
-            lappend __updated__ $prop
-        }
-
         set prop_ref [my __prop_get_many_to_many $prop]
 
         # if property reference type is not a many-to-many, then just set it and return
         if { $prop_ref eq "" } {
 
+            # Do nothing if the property has a value and it is the same as the one
+            # we are trying to set
+            if { [my __prop_exists $prop] && [my __prop_get $prop] eq $value } {
+                return $value
+            }
+
             if { [dict get $opts -primarykey] } {
                 my __setPK $value
+            }
+
+            if { [my __get_status] eq "loaded" } {
+                lappend __updated__ $prop
             }
 
             return [my __prop_set $prop $value]
@@ -214,8 +257,17 @@ namespace eval ::tpersist {}
         if { $op eq "-set" } {
             # unlink all previous objects
             if { !$is_internal && [my __prop_exists $prop] } {
-                foreach obj $prop {
-                    $obj $prop_ref [self object] -remove_int
+                foreach obj [my __prop_get $prop] {
+                    # We must not break an existing link with the object that
+                    # is specified in the set value. Instead, we will remove that object
+                    # from the set value.
+                    if { $obj in $value } {
+                        set pos [lsearch -exact $value $obj]
+                        set value [lreplace $value $pos $pos]
+                    } else {
+                        $obj $prop_ref [self object] -remove_int
+                        my __unlink_many_to_many [self object] $prop $obj $prop_ref
+                    }
                 }
             }
             # link new objects
@@ -225,12 +277,21 @@ namespace eval ::tpersist {}
                     my __link_many_to_many [self object] $prop $obj $prop_ref
                 }
             }
-            return [my __prop_set $prop $value]
+            return [my __prop_append $prop {*}$value]
         }
 
         if { $op eq "-append" } {
             # link new objects
             if { !$is_internal } {
+                # first let's remove objects that are already linked from the values
+                if { [my __prop_exists $prop] } {
+                    foreach obj [my __prop_get $prop] {
+                        set pos [lsearch -exact $value $obj]
+                        if { $pos != -1 } {
+                            set value [lreplace $value $pos $pos]
+                        }
+                    }
+                }
                 foreach obj $value {
                     $obj $prop_ref [self object] -append_int
                     my __link_many_to_many [self object] $prop $obj $prop_ref
@@ -249,6 +310,7 @@ namespace eval ::tpersist {}
                 }
                 if { !$is_internal } {
                     $obj $prop_ref [self object] -remove_int
+                    my __unlink_many_to_many [self object] $prop $obj $prop_ref
                 }
                 my __prop_remove $prop $obj
             }
@@ -406,13 +468,18 @@ namespace eval ::tpersist {}
         return [info exists __primary_key__]
     }
 
+    method __hasCombinedPK { } {
+        set myclass [info object class [self object]]
+        return [$myclass is_primarykey_combined]
+    }
+
 }
 
 ::oo::class create ::tpersist::MixinEntity {
 
-    method get_all { } {
+    method select { {where {}} {values {}} } {
         set myclass [self object]
-        set primarykeys [[my db] retrieve_pk_all $myclass]
+        set primarykeys [[my db] retrieve_pk_select $myclass $where $values]
         switch -exact -- [llength $primarykeys] {
             0 { return [list] }
             1 {
@@ -511,6 +578,11 @@ namespace eval ::tpersist {}
         return [lindex [info class superclasses $myclass] 0]
     }
 
+    method children { } {
+        set myclass [self object]
+        return [info class subclasses $myclass]
+    }
+
     method base { } {
         set myclass [self object]
         set parent [set preparent [$myclass parent]]
@@ -532,9 +604,15 @@ namespace eval ::tpersist {}
         return [expr { [llength [info class subclasses $mybase]] != 0 }]
     }
 
+    method is_primarykey_combined { } {
+        set primarykey [my primarykey]
+        return [expr { [llength [split $primarykey]] > 1 }]
+    }
+
     method properties { args } {
 
         set rest $args
+        set myclass [self object]
 
         set check_option [list apply [list { option varname } {
             upvar 1 rest rest
@@ -546,6 +624,30 @@ namespace eval ::tpersist {}
             }
         }]]
 
+        {*}$check_option -own own
+        {*}$check_option -all all
+
+        if { $all } {
+
+            if { $own } {
+                return -code error "-all and -own arguments are mutually exclusive"
+            }
+
+            set result [list]
+            set entities [list [my base]]
+
+            while { [llength $entities] } {
+                set entity [lindex $entities 0]
+                set entities [lrange $entities 1 end]
+                lappend entities {*}[$entity children]
+                lappend result {*}[$entity properties -own {*}$rest]
+            }
+
+            return $result
+
+        }
+
+
         {*}$check_option -options options
         {*}$check_option -required required
 
@@ -553,7 +655,6 @@ namespace eval ::tpersist {}
             return -code error "unknown arguments: $rest"
         }
 
-        set myclass [self object]
         # Get all methods of the class
         set methods [info class methods $myclass -private]
         # Filter the method list by the __PROP__* pattern
@@ -588,7 +689,7 @@ namespace eval ::tpersist {}
 
         }
 
-        if { ![my is_base] } {
+        if { !$own && ![my is_base] } {
             lappend props {*}[[my parent] properties {*}$args]
         }
 

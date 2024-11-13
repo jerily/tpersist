@@ -39,8 +39,8 @@ proc ::tpersist::session { action } {
 
         if { $action eq "done" } {
             uplevel 1 [list trace remove variable $session_var unset [list ::tpersist::session::_trace_unset $session_ns]]
-            uplevel 1 [list ::tpersist::_session_commit $session_ns]
-            uplevel 1 [list ::tpersist::_session_cleanup $session_ns]
+            ::tpersist::_session_commit $session_ns
+            ::tpersist::_session_cleanup $session_ns
             tailcall unset $session_var
         }
 
@@ -112,14 +112,21 @@ proc ::tpersist::_session_commit { session_ns } {
     puts "*** Commit changes from session: $session_ns"
 
     upvar #0 ${session_ns}::objs objs
+    upvar #0 ${session_ns}::remove_index remove_index
 
     if { ![info exists objs] } {
-        puts "*** nothing was created/updated within the session"
+        # This check for the existence of the objs variable will work
+        # even if we create a new object in the session and then destroy
+        # it without writing it to the database. In this case, this variable
+        # will just be empty but existing.
+        puts "*** nothing was created/updated/deleted within the session"
         return
     }
 
     # split objects by databases
-    set dbmap [dict create]
+    set dbmap_add [dict create]
+    set dbmap_del [dict create]
+
     foreach obj $objs {
 
         switch -exact -- [set status [[info object namespace $obj]::my __get_status]] {
@@ -135,41 +142,64 @@ proc ::tpersist::_session_commit { session_ns } {
                 }
 
             }
-            "dead" {
-                puts "*** Dead object: $obj"
-                continue
-            }
             default {
                 return -code error "unknown object status: $status"
             }
         }
 
         set db [[info object class $obj] db]
-        dict lappend dbmap $db $obj
+        dict lappend dbmap_add $db $obj
 
     }
 
+    if { [info exists remove_index] } {
+        dict for { class pks } $remove_index {
+            puts "*** Delete objects within class $class: $pks"
+            set db [$class db]
+            dict lappend dbmap_del $db $class $pks
+        }
+    }
+
+    set dbs [lsort [join [list [dict keys $dbmap_add] [dict keys $dbmap_del]]]]
     set error 0
 
     # commit objects from each db
-    dict for { db objs } $dbmap {
+    foreach db $dbs {
 
-        if { [set error [catch [list $db transaction_begin] errmsg erropts]] } {
+        set error [catch [list $db transaction_begin] errmsg erropts]
+
+        if { $error } {
             set errmsg "failed to begin transaction while commiting objects from \"$db\" database: $errmsg"
         } else {
 
-            set error [catch [list $db commit_objects $objs] errmsg erropts]
-            if { $error } {
-                set errmsg "failed to commit objects from \"$db\" database: $errmsg"
-                break
+            if { [dict exists $dbmap_del $db] } {
+
+                set classes [dict get $dbmap_del $db]
+                set error [catch [list $db delete_objects $classes] errmsg erropts]
+                if { $error } {
+                    set errmsg "failed to remove objects from \"$db\" database: $errmsg"
+                }
+
+            }
+
+            if { !$error && [dict exists $dbmap_add $db] } {
+
+                set objs [dict get $dbmap_add $db]
+
+                set error [catch [list $db commit_objects $objs] errmsg erropts]
+                if { $error } {
+                    set errmsg "failed to commit objects from \"$db\" database: $errmsg"
+                }
+
             }
 
             if { $error } {
-                if { [catch [list $db transaction_rollback] errmsg_more erropts] } {
+                if { [catch [list $db transaction_rollback] errmsg_more erropts_more] } {
                     append errmsg "; failed to rollback the transaction: $errmsg_more"
                 }
             } else {
-                if { [set error [catch [list $db transaction_commit] errmsg erropts]] } {
+                set error [catch [list $db transaction_commit] errmsg erropts]
+                if { $error } {
                     set errmsg "failed to commit transaction while commiting objects from \"$db\" database: $errmsg"
                 }
             }
@@ -186,9 +216,12 @@ proc ::tpersist::_session_commit { session_ns } {
         return -options $erropts $errmsg
     }
 
+    # Reset index of deleted objects
+    unset -nocomplain remove_index
+
     # Mark all objects as "not modified" if everything has been successfully
     # sent to db
-    foreach obj [join [dict values $dbmap]] {
+    foreach obj [join [dict values $dbmap_add]] {
         [info object namespace $obj]::my __reset_updated
     }
 
@@ -227,19 +260,22 @@ proc ::tpersist::_session_del { object } {
     }
 
     upvar #0 "${session_ns}::objs" objs
+
     set pos [lsearch -exact $objs $object]
     if { $pos == -1 } {
         return -code error "object $object is not registered in the active session"
     }
     set objs [lreplace $objs $pos $pos]
 
+    set class      [info object class $object]
+
     if { [[info object namespace $object]::my __hasPK] } {
 
         upvar #0 "${session_ns}::index" index
 
-        set class [info object class $object]
-        set pk    [$object getPK]
-        dict unset index $class $pk
+        set primarykey [$object getPK]
+
+        dict unset index $class $primarykey
 
     }
 
@@ -254,6 +290,30 @@ proc ::tpersist::_session_del { object } {
 
     # If we are here, then $status is "loaded" which means we have to
     # delete the object from the database
+
+    upvar #0 "${session_ns}::remove_index" remove_index
+
+    if { [[info object namespace $object]::my __hasPK] } {
+
+        puts "*** Delete object with PK: $object ($primarykey)"
+
+        set primarykey [$object getPK]
+        dict lappend remove_index $class $primarykey
+
+    } elseif { [[info object namespace $object]::my __hasCombinedPK] } {
+
+        puts "*** Delete object with combined PK: $object"
+
+        set primarykey_name [$class primarykey]
+
+        set criteria [dict create]
+        foreach primarykey_part $primarykey_name {
+            dict set criteria $primarykey_part [[$object $primarykey_part] getPK]
+        }
+
+        dict lappend remove_index $class $criteria
+
+    }
 
 }
 
