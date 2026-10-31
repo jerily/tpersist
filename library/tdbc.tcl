@@ -114,6 +114,9 @@ proc ::tpersist::_prepare {handle statement options} {
     try {
         dict for {name type} [dict get $compiled types] {
             if {$type eq "auto"} continue
+            # Preserve decimal text across the MySQL driver; the compiler's
+            # explicit CAST supplies precision and scale on the server.
+            if {$type eq "decimal" && [dict get $c dialect] eq "mysql"} { set type text }
             set type [dict get {text varchar integer bigint bigint bigint real double \
                 double double boolean bit binary varbinary decimal decimal \
                 date date timestamp timestamp} $type]

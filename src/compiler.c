@@ -100,7 +100,68 @@ static Tcl_Obj *convert(Compiler *p,Tcl_Obj *value,const char *type) {
     return TpOwn(c,Tcl_NewStringObj(s,n));
 }
 
-static int bind(Compiler *p,Tcl_Obj *value,Tcl_Obj *name,const char *type) {
+/* MySQL needs an explicit scale: CAST(... AS DECIMAL) otherwise rounds to an
+ * integer. Derive it from the bound text without converting through double. */
+static int decimalScale(Compiler *p,Tcl_Obj *value,int *scale) {
+    *scale=30; /* A missing or NULL parameter has no value to narrow the scale. */
+    if(!value) return TCL_OK;
+    TpSize len; const char *s=Tcl_GetStringFromObj(value,&len), *end=s+len;
+    Tcl_WideInt digits=0, before=0, leading=0, exponent=0;
+    int point=0, nonzero=0, negative=0;
+    if(s<end && (*s=='+' || *s=='-')) ++s;
+    while(s<end) {
+        if(*s>='0' && *s<='9') {
+            ++digits; if(!point) ++before;
+            if(*s!='0') nonzero=1;
+            if(!nonzero) ++leading;
+            ++s;
+        } else if(*s=='.' && !point) { point=1; ++s; }
+        else break;
+    }
+    if(!digits) return TpError(&p->c,"TYPE","invalid decimal value");
+    if(s<end && (*s=='e' || *s=='E')) {
+        ++s;
+        if(s<end && (*s=='+' || *s=='-')) { negative=*s=='-'; ++s; }
+        const char *start=s;
+        while(s<end && *s>='0' && *s<='9') {
+            if(exponent>1000000) return TpError(&p->c,"TYPE","decimal exceeds MySQL precision or scale");
+            exponent=exponent*10+(*s++-'0');
+        }
+        if(s==start) return TpError(&p->c,"TYPE","invalid decimal value");
+        if(negative) exponent=-exponent;
+    }
+    if(s!=end) return TpError(&p->c,"TYPE","invalid decimal value");
+    Tcl_WideInt fractional=digits-before-exponent, integral=before-leading+exponent;
+    if(fractional<0) fractional=0;
+    if(integral<0 || !nonzero) integral=0;
+    if(fractional>30 || integral>65-fractional)
+        return TpError(&p->c,"TYPE","decimal exceeds MySQL precision or scale");
+    *scale=(int)fractional;
+    return TCL_OK;
+}
+
+/* Establish numeric types before the server prepares the SQL. TDBC's later
+ * paramtype hints cannot undo PostgreSQL/MySQL inference from an integer column.
+ * Pagination uses bare placeholders because MySQL's LIMIT grammar requires it. */
+static int placeholder(Compiler *p,Tcl_Obj *slot,const char *type,int numeric) {
+    const char *cast=NULL; char decimal[32];
+    if(numeric && !strcmp(p->dialect,"postgresql")) {
+        if(!strcmp(type,"decimal")) cast="NUMERIC";
+        else if(!strcmp(type,"integer") || !strcmp(type,"bigint")) cast="BIGINT";
+        else if(!strcmp(type,"real") || !strcmp(type,"double")) cast="DOUBLE PRECISION";
+    } else if(numeric && !strcmp(p->dialect,"mysql") && !strcmp(type,"decimal")) {
+        Tcl_Obj *value=NULL; int scale;
+        Tcl_DictObjGet(NULL,p->params,slot,&value);
+        TRY(decimalScale(p,value,&scale));
+        snprintf(decimal,sizeof(decimal),"DECIMAL(65,%d)",scale); cast=decimal;
+    }
+    if(cast) ADD("CAST(");
+    ADD(":"); ADD(Tcl_GetString(slot));
+    if(cast) { ADD(" AS "); ADD(cast); ADD(")"); }
+    return TCL_OK;
+}
+
+static int bind(Compiler *p,Tcl_Obj *value,Tcl_Obj *name,const char *type,int numeric) {
     TRY(validType(p,type));
     Tcl_Obj *slot=NULL;
     if(name) {
@@ -110,7 +171,7 @@ static int bind(Compiler *p,Tcl_Obj *value,Tcl_Obj *name,const char *type) {
         if(slot) {
             Tcl_Obj *oldType=NULL; Tcl_DictObjGet(NULL,p->types,slot,&oldType);
             if(strcmp(Tcl_GetString(oldType),type)) return TpError(&p->c,"TYPE","repeated named parameter has conflicting types");
-            ADD(":"); ADD(Tcl_GetString(slot)); return TCL_OK;
+            return placeholder(p,slot,type,numeric);
         }
     }
     char buf[48]; snprintf(buf,sizeof(buf),"p%u",++p->serial);
@@ -130,7 +191,7 @@ static int bind(Compiler *p,Tcl_Obj *value,Tcl_Obj *name,const char *type) {
         if(!value) return TCL_ERROR;
         Tcl_DictObjPut(NULL,p->params,slot,value);
     }
-    ADD(":"); ADD(buf); return TCL_OK;
+    return placeholder(p,slot,type,numeric);
 }
 
 #define PROJECTION TP_PROJECTION
@@ -159,7 +220,7 @@ static int exprBody(Compiler *p,Tcl_Obj *d,int flags) {
         TRY(keys(p,d,named?"node name type":"node value type"));
         Tcl_Obj *value=required(p,d,named?"name":"value"), *type=required(p,d,"type");
         if(!value || !type) return TCL_ERROR;
-        return bind(p,named?NULL:value,named?value:NULL,Tcl_GetString(type));
+        return bind(p,named?NULL:value,named?value:NULL,Tcl_GetString(type),1);
     }
     if(!strcmp(node,"alias")) {
         TRY(keys(p,d,"node expr name"));
@@ -256,10 +317,10 @@ static int pagination(Compiler *p,Tcl_Obj *d) {
         Tcl_WideInt n; TRY(TpWideInt(&p->c,values[i],&n));
         if(n<0) return TpError(&p->c,"VALIDATION","limit and offset must be nonnegative");
     }
-    if(limit) { ADD(" LIMIT "); TRY(bind(p,limit,NULL,"integer")); }
+    if(limit) { ADD(" LIMIT "); TRY(bind(p,limit,NULL,"integer",0)); }
     else if(offset && !strcmp(p->dialect,"sqlite")) ADD(" LIMIT -1");
     else if(offset && !strcmp(p->dialect,"mysql")) ADD(" LIMIT 18446744073709551615");
-    if(offset) { ADD(" OFFSET "); TRY(bind(p,offset,NULL,"integer")); }
+    if(offset) { ADD(" OFFSET "); TRY(bind(p,offset,NULL,"integer",0)); }
     return TCL_OK;
 }
 

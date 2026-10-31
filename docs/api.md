@@ -196,9 +196,17 @@ Supported value types are `auto` (default), `text`, `integer`, `bigint`, `real`,
   can impose a narrower range.
 - `real` and `double` require finite floating-point values.
 - `text` keeps strings such as `00123` as text. `binary` uses Tcl byte arrays.
-- `decimal`, `date`, and `timestamp` are passed as text with TDBC type hints;
-  the backend validates their formats. SQLite does not guarantee exact DECIMAL
-  storage under numeric affinity; use TEXT when exact decimal text is required.
+- `decimal` preserves the bound text. PostgreSQL uses a NUMERIC cast; MySQL
+  uses DECIMAL(65, scale), with scale derived from the supplied value, and binds
+  it as text to avoid driver rounding. MySQL values exceeding 65 digits of
+  precision or 30 fractional digits are rejected. An unresolved or NULL MySQL
+  decimal parameter uses scale 30; execution recompiles with supplied values.
+  SQLite does not guarantee exact DECIMAL storage under numeric affinity;
+  use TEXT when exact decimal text is required.
+- PostgreSQL also casts explicit integer and floating-point expression
+  parameters before preparation, so column inference cannot narrow their types.
+- `date` and `timestamp` are passed as text with TDBC type hints; the backend
+  validates their formats.
 
 Identifiers are quoted separately from values. This API deliberately has no
 raw SQL expression constructor. Dialect differences include quoting, pagination,
