@@ -1,0 +1,91 @@
+# Exercise the TDBC protocol without requiring remote database services.
+package require tcltest 2
+package require tpersist
+namespace import ::tcltest::test
+namespace import ::tpersist::db_*
+namespace eval ::fake {
+    variable calls {}
+    variable fail 0
+    variable alive 0
+}
+oo::class create ::fake::Connection {
+    method prepare {sql} {
+        lappend ::fake::calls [list prepare $sql]
+        ::fake::Statement new
+    }
+    method begintransaction {} { lappend ::fake::calls begin }
+    method commit {} { lappend ::fake::calls commit }
+    method rollback {} { lappend ::fake::calls rollback }
+    method close {} { my destroy }
+}
+oo::class create ::fake::Statement {
+    constructor {} { incr ::fake::alive }
+    destructor { incr ::fake::alive -1 }
+    method paramtype {name type} { lappend ::fake::calls [list type $name $type] }
+    method execute {dictionary} {
+        lappend ::fake::calls [list execute $dictionary]
+        if {$::fake::fail} { return -code error -errorcode {TDBC GENERAL_ERROR HY000 FAKE 1} failed }
+        ::fake::Result new
+    }
+    method close {} { my destroy }
+}
+oo::class create ::fake::Result {
+    constructor {} { incr ::fake::alive }
+    destructor { incr ::fake::alive -1 }
+    method columns {} { return name }
+    method rowcount {} { return 1 }
+    method allrows {args} { return {{name Alice}} }
+    method close {} { my destroy }
+}
+proc fakeConnect {dialect} {
+    set ::fake::calls {}
+    set ::fake::fail 0
+    dict set ::tpersist::connections fake [dict create command [::fake::Connection new] \
+        dialect $dialect autobegin 1 transaction 0 savepoints {}]
+    return fake
+}
+
+foreach {dialect quoted} {sqlite {"users"} postgresql {"users"} mysql {`users`}} {
+    test adapter-bind-$dialect {dialect SQL and typed dictionary bindings go through TDBC} -setup {
+        set db [fakeConnect $dialect]
+    } -body {
+        set s [db_where [db_select users -columns name] [db_eq [db_col age] [db_param age -type integer]]]
+        set result [db_execute $db $s -params {age 21}]
+        list $::fake::calls [dict get $result rows] $::fake::alive
+    } -cleanup {db_disconnect $db} -result [list [list begin \
+        [list prepare "SELECT [expr {$dialect eq "mysql" ? "`name`" : "\"name\""}] FROM $quoted WHERE ([expr {$dialect eq "mysql" ? "`age`" : "\"age\""}] = :p1)"] \
+        {type p1 bigint} {execute {p1 21}}] {{name Alice}} 0]
+}
+
+test adapter-1.1 {explicit NULL passes an empty dictionary to TDBC} -setup {
+    set db [fakeConnect postgresql]
+} -body {
+    db_execute $db [db_values [db_insert users] [dict create name [db_param name]] -expressions] -nulls name
+    lindex $::fake::calls end
+} -cleanup {db_disconnect $db} -result {execute {}}
+
+test adapter-1.2 {driver errors retain SQLSTATE and close the statement} -setup {
+    set db [fakeConnect mysql]
+    set ::fake::fail 1
+} -body {
+    catch {db_execute $db [db_select users]} message opts
+    list $message [dict get $opts -errorcode] $::fake::alive
+} -cleanup {db_disconnect $db} -result {failed {TDBC GENERAL_ERROR HY000 FAKE 1} 0}
+
+test adapter-1.3 {MySQL DDL cannot implicitly commit an active transaction} -setup {
+    set db [fakeConnect mysql]
+    db_begin $db
+} -body {
+    db_create_table $db [db_define_table users {id {type integer}}]
+} -cleanup {db_disconnect $db} -returnCodes error -match glob -result {*DDL can commit implicitly*}
+
+test adapter-1.4 {invalid compiler input never reaches TDBC} -setup {
+    set db [fakeConnect postgresql]
+} -body {
+    catch {db_execute $db [db_update users]}
+    set ::fake::calls
+} -cleanup {db_disconnect $db} -result {}
+
+rename fakeConnect {}
+namespace delete ::fake
+::tcltest::cleanupTests

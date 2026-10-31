@@ -1,0 +1,89 @@
+package require tcltest 2
+package require tpersist
+namespace import ::tcltest::test
+namespace import ::tpersist::db_*
+
+test oo-1.1 {the optional package is not loaded by the core} -body {
+    interp create oochild
+    oochild eval [list set auto_path $::auto_path]
+    set result [oochild eval {
+        package require tpersist
+        list [package provide tpersist::oo] [info commands ::tpersist::oo::Database]
+    }]
+    interp delete oochild
+    set result
+} -result {{} {}}
+
+test oo-1.4 {loading the OO layer does not modify application globals} -body {
+    set ::operation application-value
+    package require tpersist::oo
+    set ::operation
+} -cleanup {unset ::operation} -result application-value
+::tcltest::testConstraint ooSqlite [expr {![catch {package require tdbc::sqlite3}]}]
+
+test oo-1.2 {standalone queries can fork without changing their base or source dictionary} -setup {
+    set original [db_select users]
+    set query [::tpersist::oo::Query new $original]
+} -body {
+    set branch [$query fork]
+    $branch where [db_ge [db_col age] [db_value 18 -type integer]]
+    $branch order_by name
+    $branch limit 10
+    list [dict exists $original where] [dict exists [$query statement] where] [dict get [$branch compile] sql]
+} -cleanup {$branch destroy; $query destroy} \
+    -result {0 0 {SELECT * FROM "users" WHERE ("age" >= :p1) ORDER BY "name" LIMIT :p2}}
+
+test oo-1.3 {a failed builder leaves the object's prior state intact} -setup {
+    set query [::tpersist::oo::Query new [db_select users]]
+} -body {
+    $query limit 5
+    catch {$query limit -1}
+    dict get [$query statement] limit
+} -cleanup {$query destroy} -result 5
+
+test oo-2.1 {Database creates queries, runs transactions and owns child lifetimes} -constraints ooSqlite -setup {
+    set database [::tpersist::oo::Database new -database :memory:]
+} -body {
+    $database create_table [db_define_table users {name {type text} age {type integer}}]
+    set insert [$database insert users]
+    $database transaction {
+        $insert values {name Alice age 30}
+        $insert execute
+    }
+    set query [$database select users -columns name]
+    $query where [db_ge [db_col age] [db_value 18 -type integer]]
+    set rows [$query all]
+    set connection [$database connection]
+    set child [$query fork]
+    $database destroy
+    list $rows [info object isa object $query] [info object isa object $child] \
+        [catch {db_execute $connection [db_select users]}]
+} -cleanup {if {[info object isa object $database]} {$database destroy}} -result {{{name Alice}} 0 0 1}
+
+test oo-2.2 {OO transactions and row loops retain the caller's scope and control flow} -constraints ooSqlite -setup {
+    set database [::tpersist::oo::Database new -database :memory:]
+    $database create_table [db_define_table users {name {type text}}]
+    proc ooReturn {database} {
+        $database transaction {
+            $database execute [db_values [db_insert users] {name Alice}]
+            return committed
+        }
+        error unreachable
+    }
+    proc ooRowReturn {query} {
+        $query foreach_row row {return [dict get $row name]}
+        error unreachable
+    }
+} -body {
+    list [ooReturn $database] [ooRowReturn [$database select users]]
+} -cleanup {rename ooReturn {}; rename ooRowReturn {}; $database destroy} -result {committed Alice}
+
+test oo-2.3 {explicitly destroyed children do not prevent database cleanup} -constraints ooSqlite -body {
+    set database [::tpersist::oo::Database new -database :memory:]
+    set query [$database select users]
+    $query destroy
+    $database destroy
+    info object isa object $database
+} -result 0
+
+::tcltest::cleanupTests

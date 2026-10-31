@@ -1,0 +1,4 @@
+if {@BUILD_SHARED_LIBS@} {
+    package ifneeded tpersist @PROJECT_VERSION@ [list load [file join $dir libtpersist[info sharedlibextension]] Tpersist]
+}
+package ifneeded tpersist::oo @PROJECT_VERSION@ [list source [file join $dir oo.tcl]]
