@@ -44,6 +44,7 @@ oo::class create ::tpersist::oo::Query {
 # builders still return independent Tcl values; aliases of the OO command are
 # aliases of the same mutable query, while fork creates a separate query.
 namespace eval ::tpersist::oo {
+    variable operation
     foreach operation {where having order_by group_by returning limit offset distinct values join clear} {
         oo::define ::tpersist::oo::Query method $operation args [format {
             set statement [::tpersist::db_%s $statement {*}$args]
@@ -91,6 +92,7 @@ oo::class create ::tpersist::oo::Database {
 }
 
 namespace eval ::tpersist::oo {
+    variable operation
     foreach operation {select insert update delete} {
         oo::define ::tpersist::oo::Database method $operation args [format {
             return [my query [::tpersist::db_%s {*}$args]]
