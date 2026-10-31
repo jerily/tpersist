@@ -1,7 +1,8 @@
 # Building and testing
 
 The implementation uses C11, Tcl's public object API, and Tcl stubs. The C
-sources implement dictionary builders, validation, and DML compilation. The Tcl
+sources implement dictionary builders, SQL-style expression parsing, validation,
+and DML compilation. The Tcl
 sources implement TDBC adaptation and schema definitions. CMake embeds these
 scripts into the library, so shared and static builds expose the same API without
 a runtime dependency on files in the source tree.
@@ -46,6 +47,8 @@ headers and an appropriate deployment environment.
 The `tcltest` suite covers:
 
 - Reusable query branches and copy-on-write behavior.
+- Expression precedence, contextual lists, quoting, typed literals, parse
+  diagnostics, nesting bounds, and truncated-input handling.
 - SQL generation for all three dialects, including quoting and pagination.
 - Named and typed parameters, SQL injection strings, NULL, blobs, and integers
   beyond floating-point precision, with explicit overflow rejection on Tcl 8.6.
@@ -60,6 +63,10 @@ Run against an uninstalled shared build:
 tclsh8.6 tests/all.tcl build86
 tclsh8.6 tests/all.tcl build86 -match 'compile-*'
 ```
+
+The runner registers the chosen build's package index explicitly, so an older
+installed copy cannot supply the core or OO script. OO loader regression tests
+use fresh interpreters and also work when selected individually.
 
 SQLite execution tests are skipped when `tdbc::sqlite3` is unavailable. Set
 `TPERSIST_REQUIRE_SQLITE=1` to make missing SQLite support fail the run. Compiler,
@@ -93,6 +100,7 @@ gets it through the linker flags.
 | `src/library.c` | Initialization, command registration, embedded adapter loading |
 | `src/statements.c` | Value-based builders and integer conversion |
 | `src/compiler.c` | Validation, expression traversal, SQL and bound parameters |
+| `src/expressions.c` | Tokenizer and bounded SQL-style expression parser |
 | `library/tdbc.tcl` | Connections, execution, row loops, transactions |
 | `library/schema.tcl` | Table metadata, DDL compilation, schema commands |
 | `library/oo.tcl` | Separate optional TclOO convenience package |

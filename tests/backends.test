@@ -52,13 +52,18 @@ foreach dialect {postgresql mysql} {
         db_transaction $db {
             foreach name {Alice Bob Carol} { db_execute $db [db_values [db_insert $table] [dict create name $name]] }
         }
-        set s [db_where [db_select $table -columns name] [db_ne [db_col name] [db_param excluded -type text]]]
-        set s [db_offset [db_order_by $s name] 1]
+        # set s [db_where [db_select $table -columns name] [db_ne [db_col name] [db_param excluded -type text]]]
+        set s [db_where [db_select $table -expr {name}] -expr {name <> :excluded}]
+        # set s [db_offset [db_order_by $s name] 1]
+        set s [db_offset [db_order_by $s -expr {name}] 1]
         set rows [dict get [db_execute $db $s -params {excluded Bob}] rows]
-        db_execute $db [db_where [db_values [db_update $table] {name Changed}] [db_eq [db_col name] [db_value Alice]]]
-        db_execute $db [db_where [db_delete $table] [db_eq [db_col name] [db_value Carol]]]
+        # db_execute $db [db_where [db_values [db_update $table] {name Changed}] [db_eq [db_col name] [db_value Alice]]]
+        db_execute $db [db_where [db_values [db_update $table] {name Changed}] -expr {name = 'Alice'}]
+        # db_execute $db [db_where [db_delete $table] [db_eq [db_col name] [db_value Carol]]]
+        db_execute $db [db_where [db_delete $table] -expr {name = 'Carol'}]
         db_commit $db
-        list $rows [dict get [db_execute $db [db_order_by [db_select $table -columns name] name]] rows]
+        # list $rows [dict get [db_execute $db [db_order_by [db_select $table -columns name] name]] rows]
+        list $rows [dict get [db_execute $db [db_order_by [db_select $table -expr {name}] -expr {name}]] rows]
     } -cleanup {backendCleanup $db $table} -result {{{name Carol}} {{name Bob} {name Changed}}}
 
     test backend-transactions-$dialect {nested savepoint rollback preserves the outer transaction} -constraints $dialect -setup {
@@ -73,6 +78,32 @@ foreach dialect {postgresql mysql} {
         }
         dict get [db_execute $db [db_select $table -columns name]] rows
     } -cleanup {backendCleanup $db $table} -result {{name Outer}}
+
+    test backend-expressions-$dialect {parsed aggregates, decimal literals and parameters execute on the real backend} -constraints $dialect -setup {
+        lassign [backendSetup $dialect] db table
+    } -body {
+        db_transaction $db {
+            foreach {name amount flag} {Alice 1 1 Bob 2 1 Skip 3 0} {
+                db_execute $db [db_values [db_insert $table] [dict create \
+                    name [db_value $name -type text] big [db_value $amount -type bigint] \
+                    flag [db_value $flag -type boolean]] -expressions]
+            }
+        }
+        # db_select $table -columns [list [db_col flag] [db_alias [db_count] n] [db_alias [db_sum [db_col big]] total]]
+        set s [db_select $table -expr {flag, COUNT(*) AS n, SUM(big) AS total}]
+        # db_where $s [db_and [db_ge [db_col big] [db_param minimum]] [db_is_null [db_col note]]]
+        set s [db_where $s -expr {big >= :minimum AND note IS NULL}]
+        # db_having [db_group_by $s flag] [db_ge [db_count] [db_value 2 -type integer]]
+        set s [db_having [db_group_by $s -expr {flag}] -expr {COUNT(*) >= 2}]
+        # db_order_by $s [db_desc [db_col total]]
+        set row [lindex [dict get [db_execute $db [db_order_by $s -expr {total DESC}] -params {minimum 1}] rows] 0]
+        # db_select $table -columns [list [db_alias [db_sum [db_add [db_col big] [db_value .25 -type decimal]]] total]]
+        set decimal [db_select $table -expr {SUM(big + .25) AS total}]
+        # db_where $decimal [db_not [db_like [db_col name] [db_value Skip% -type text]]]
+        set decimal [db_where $decimal -expr {NOT (name LIKE 'Skip%')}]
+        set total [dict get [lindex [dict get [db_execute $db $decimal] rows] 0] total]
+        list [dict get $row n] [dict get $row total] [expr {$total == 3.5}]
+    } -cleanup {backendCleanup $db $table} -result {2 3 1}
 }
 
 rename backendSetup {}

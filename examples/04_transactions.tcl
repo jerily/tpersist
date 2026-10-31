@@ -9,8 +9,10 @@ try {
         db_execute $db [db_values [db_insert accounts] {name Bob balance 20}]
     }
     db_transaction $db {
-        set alice [db_where [db_update accounts] [db_eq [db_col name] [db_value Alice]]]
-        set bob [db_where [db_update accounts] [db_eq [db_col name] [db_value Bob]]]
+        # set alice [db_where [db_update accounts] [db_eq [db_col name] [db_value Alice]]]
+        set alice [db_where [db_update accounts] -expr {name = 'Alice'}]
+        # set bob [db_where [db_update accounts] [db_eq [db_col name] [db_value Bob]]]
+        set bob [db_where [db_update accounts] -expr {name = 'Bob'}]
         db_execute $db [db_values $alice {balance 90}]
         db_execute $db [db_values $bob {balance 30}]
 
@@ -21,7 +23,8 @@ try {
             error "Rejected optional adjustment"
         }} message]} { puts $message }
     }
-    puts "After transfer: [dict get [db_execute $db [db_order_by [db_select accounts] name]] rows]"
+    # puts "After transfer: [dict get [db_execute $db [db_order_by [db_select accounts] name]] rows]"
+    puts "After transfer: [dict get [db_execute $db [db_order_by [db_select accounts] -expr {name}]] rows]"
     db_commit $db
 
     db_begin $db
@@ -30,5 +33,6 @@ try {
     db_rollback_to $db experiment
     db_release $db experiment
     db_commit $db
-    puts "After undo: [dict get [db_execute $db [db_order_by [db_select accounts] name]] rows]"
+    # puts "After undo: [dict get [db_execute $db [db_order_by [db_select accounts] name]] rows]"
+    puts "After undo: [dict get [db_execute $db [db_order_by [db_select accounts] -expr {name}]] rows]"
 } finally { db_disconnect $db }

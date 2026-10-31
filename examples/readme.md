@@ -4,6 +4,10 @@ Each numbered example is a complete Tcl script. The database examples use
 in-memory SQLite and require `tdbc::sqlite3`. The query-composition example
 only needs `tpersist`.
 
+Examples use the concise `-expr` syntax, with the previous dictionary-builder
+form preserved beside it as comments. Both forms produce the same statement
+structures; named parameters in strings use the default `auto` type.
+
 After building, run them with the same Tcl version used for the build:
 
 ```sh
@@ -27,8 +31,9 @@ set db [db_connect -dialect postgresql -host localhost \
 # Or: -dialect mysql
 try {
     db_transaction $db {
-        set query [db_where [db_select users -columns {id name}] \
-            [db_eq [db_col name] [db_param name -type text]]]
+        # Builder form: db_where [db_select users -columns {id name}] \
+        #     [db_eq [db_col name] [db_param name -type text]]
+        set query [db_where [db_select users -expr {id, name}] -expr {name = :name}]
         set result [db_execute $db $query -params [dict create name Alice]]
     }
     puts [dict get $result rows]

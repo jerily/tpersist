@@ -200,11 +200,48 @@ static int build(TpContext *c, const char *cmd, int objc, Tcl_Obj *const v[], Tc
 #undef OPT
 }
 
+/* Normalize explicit -expr forms into the existing builder arguments. This
+ * keeps mutation/value semantics and the optional OO forwarding layer shared. */
+static int expressionArgs(TpContext *c,const char *cmd,int objc,Tcl_Obj *const objv[],int *outc,Tcl_Obj ***outv) {
+    int index=2, list=0;
+    TpParseMode mode;
+    if(!strcmp(cmd,"select")) { mode=TP_PARSE_COLUMNS; list=1; }
+    else if(!strcmp(cmd,"where") || !strcmp(cmd,"having")) mode=TP_PARSE_PREDICATE;
+    else if(!strcmp(cmd,"join")) { mode=TP_PARSE_PREDICATE; index=3; }
+    else if(!strcmp(cmd,"order_by")) { mode=TP_PARSE_ORDER; list=1; }
+    else if(!strcmp(cmd,"group_by")) { mode=TP_PARSE_GROUP; list=1; }
+    else if(!strcmp(cmd,"returning")) { mode=TP_PARSE_COLUMNS; list=1; }
+    else return TCL_OK;
+    if(objc<=index || strcmp(Tcl_GetString(objv[index]),"-expr")) return TCL_OK;
+    if((index==2 && objc!=4) || (index==3 && objc!=5 && objc!=7))
+        return TpError(c,"ARGS",index==3?"expected statement table -expr expression ?-type inner|left?":"expected table/statement -expr expression");
+    Tcl_Obj *parsed=NULL;
+    if(TpParseExpression(c,objv[index+1],mode,&parsed)!=TCL_OK) return TCL_ERROR;
+    Tcl_Obj *arguments=TpOwn(c,Tcl_NewListObj(objc,objv));
+    if(!strcmp(cmd,"select")) {
+        Tcl_Obj *replace[]={TpStr(c,"-columns"),parsed};
+        if(Tcl_ListObjReplace(c->interp,arguments,index,2,2,replace)!=TCL_OK) return TCL_ERROR;
+    } else if(list) {
+        TpSize count; Tcl_Obj **elements;
+        if(Tcl_ListObjGetElements(c->interp,parsed,&count,&elements)!=TCL_OK) return TCL_ERROR;
+        if(count>INT_MAX-2) return TpError(c,"ARGS","too many expressions");
+        if(Tcl_ListObjReplace(c->interp,arguments,index,2,count,elements)!=TCL_OK) return TCL_ERROR;
+    } else {
+        if(Tcl_ListObjReplace(c->interp,arguments,index,2,1,&parsed)!=TCL_OK) return TCL_ERROR;
+    }
+    TpSize count;
+    if(Tcl_ListObjGetElements(c->interp,arguments,&count,outv)!=TCL_OK) return TCL_ERROR;
+    *outc=(int)count;
+    return TCL_OK;
+}
+
 int TpBuilderCmd(ClientData data, Tcl_Interp *interp, int objc, Tcl_Obj *const objv[]) {
     TpContext c={interp,Tcl_NewListObj(0,NULL)};
     Tcl_IncrRefCount(c.arena);
     Tcl_Obj *result=NULL;
-    int code=build(&c,(const char *)data,objc,objv,&result);
+    Tcl_Obj **expanded=NULL;
+    int code=expressionArgs(&c,(const char *)data,objc,objv,&objc,&expanded);
+    if(code==TCL_OK) code=build(&c,(const char *)data,objc,expanded?expanded:objv,&result);
     if(code==TCL_OK) Tcl_SetObjResult(interp,result);
     Tcl_DecrRefCount(c.arena);
     return code;

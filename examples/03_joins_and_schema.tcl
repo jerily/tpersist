@@ -25,19 +25,27 @@ try {
         }
     }
 
-    set query [db_select [db_table customers -as c] -columns [list \
-        [db_col name -table c] \
-        [db_alias [db_count [db_col id -table o]] order_count] \
-        [db_alias [db_sum [db_col total_cents -table o]] spent_cents]]]
+    # set query [db_select [db_table customers -as c] -columns [list \
+    #     [db_col name -table c] \
+    #     [db_alias [db_count [db_col id -table o]] order_count] \
+    #     [db_alias [db_sum [db_col total_cents -table o]] spent_cents]]]
+    set query [db_select [db_table customers -as c] -expr {
+        c.name, COUNT(o.id) AS order_count, SUM(o.total_cents) AS spent_cents
+    }]
+    # set query [db_join $query [db_table orders -as o] \
+    #     [db_eq [db_col id -table c] [db_col customer_id -table o]] -type left]
     set query [db_join $query [db_table orders -as o] \
-        [db_eq [db_col id -table c] [db_col customer_id -table o]] -type left]
-    set query [db_group_by $query [db_col name -table c]]
-    set query [db_order_by $query [db_col name -table c]]
+        -expr {c.id = o.customer_id} -type left]
+    # set query [db_group_by $query [db_col name -table c]]
+    set query [db_group_by $query -expr {c.name}]
+    # set query [db_order_by $query [db_col name -table c]]
+    set query [db_order_by $query -expr {c.name}]
     db_foreach_row $db row $query {
         # Carol has no orders: the SQL NULL sum has no dictionary key.
         set amount [expr {[dict exists $row spent_cents] ? [dict get $row spent_cents] : 0}]
         puts "[dict get $row name]: [dict get $row order_count] orders, $amount cents"
     }
-    set frequent [db_having $query [db_ge [db_count [db_col id -table o]] [db_value 2 -type integer]]]
+    # set frequent [db_having $query [db_ge [db_count [db_col id -table o]] [db_value 2 -type integer]]]
+    set frequent [db_having $query -expr {COUNT(o.id) >= 2}]
     puts "Frequent customers: [dict get [db_execute $db $frequent] rows]"
 } finally { db_disconnect $db }

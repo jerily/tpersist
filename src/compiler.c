@@ -133,7 +133,9 @@ static int bind(Compiler *p,Tcl_Obj *value,Tcl_Obj *name,const char *type) {
     ADD(":"); ADD(buf); return TCL_OK;
 }
 
-enum { PROJECTION=1, ORDERING=2, STAR=4 };
+#define PROJECTION TP_PROJECTION
+#define ORDERING TP_ORDERING
+#define STAR TP_STAR
 static int expression(Compiler *p,Tcl_Obj *d,int flags);
 static int exprBody(Compiler *p,Tcl_Obj *d,int flags) {
     Tcl_Obj *o=required(p,d,"node"); if(!o) return TCL_ERROR;
@@ -222,6 +224,19 @@ static int exprBody(Compiler *p,Tcl_Obj *d,int flags) {
 static int expression(Compiler *p,Tcl_Obj *d,int flags) {
     if(++p->depth>100) { --p->depth; return TpError(&p->c,"VALIDATION","expression nesting exceeds 100 levels"); }
     int code=exprBody(p,d,flags); --p->depth; return code;
+}
+
+/* Reuse compiler validation for parsed nodes, including context restrictions
+ * and the tree depth bound. All temporary objects belong to the caller's arena. */
+int TpCheckExpression(TpContext *c,Tcl_Obj *node,int flags) {
+    Compiler p={0};
+    p.c=*c; p.dialect="sqlite";
+    p.params=TpDict(c); p.types=TpDict(c); p.bindings=TpDict(c); p.nullNames=TpDict(c);
+    p.required=TpList(c); p.named=TpDict(c); p.used=TpDict(c);
+    Tcl_DStringInit(&p.sql);
+    int code=expression(&p,node,flags);
+    Tcl_DStringFree(&p.sql);
+    return code;
 }
 
 static int clause(Compiler *p,Tcl_Obj *d,const char *key,const char *prefix,const char *separator,int flags,int mandatory) {

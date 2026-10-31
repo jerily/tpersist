@@ -2,14 +2,20 @@
 package require tpersist
 namespace import ::tpersist::db_*
 
-set base [db_select [db_table products -as p] -columns {id name price}]
-set available [db_where $base [db_and \
-    [db_eq [db_col active] [db_value 1 -type boolean]] \
-    [db_is_null [db_col deleted_at]]]]
-set search [db_where $available [db_or \
-    [db_like [db_col name] [db_param pattern -type text]] \
-    [db_in [db_col category] [list [db_value books] [db_value music]]]]]
-set search [db_order_by $search [db_asc [db_col price]] [db_asc [db_col id]]]
+# set base [db_select [db_table products -as p] -columns {id name price}]
+set base [db_select [db_table products -as p] -expr {id, name, price}]
+# set available [db_where $base [db_and \
+#     [db_eq [db_col active] [db_value 1 -type boolean]] \
+#     [db_is_null [db_col deleted_at]]]]
+set available [db_where $base -expr {active = TRUE AND deleted_at IS NULL}]
+# set search [db_where $available [db_or \
+#     [db_like [db_col name] [db_param pattern -type text]] \
+#     [db_in [db_col category] [list [db_value books] [db_value music]]]]]
+set search [db_where $available -expr {
+    name LIKE :pattern OR category IN ('books', 'music')
+}]
+# set search [db_order_by $search [db_asc [db_col price]] [db_asc [db_col id]]]
+set search [db_order_by $search -expr {price ASC, id ASC}]
 set page [db_offset [db_limit $search 20] 40]
 
 foreach dialect {sqlite postgresql mysql} {

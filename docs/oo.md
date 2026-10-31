@@ -9,9 +9,9 @@ namespace import ::tpersist::db_*
 
 set database [::tpersist::oo::Database new -database app.sqlite]
 try {
-    set query [$database select users -columns {id name}]
-    $query where [db_ge [db_col age] [db_value 18 -type integer]]
-    $query order_by name
+    set query [$database select users -expr {id, name}]
+    $query where -expr {age >= 18}
+    $query order_by -expr {name}
     $query limit 20
     set rows [$query all]
 } finally {
@@ -24,6 +24,11 @@ object's statement dictionary and returns the same object for chaining. The
 procedural builders retain their original value semantics. Use `$query fork`
 to create an independent branch; assigning the object command name to another
 variable merely creates another reference to the same mutable object.
+
+The `select`, `where`, `having`, `join`, `order_by`, `group_by`, and `returning`
+methods accept the same contextual `-expr` forms as the procedural API. Existing
+dictionary-expression arguments are also supported. See the [expression-string
+grammar](api.md#expression-strings) for supported syntax and parameter binding.
 
 ## Database
 

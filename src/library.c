@@ -26,6 +26,7 @@ int Tpersist_Init(Tcl_Interp *interp) {
         Tcl_CreateObjCommand(interp,name,TpBuilderCmd,(ClientData)commands[i],NULL);
     }
     Tcl_CreateObjCommand(interp,"::tpersist::db_compile",TpCompileCmd,NULL,NULL);
+    Tcl_CreateObjCommand(interp,"::tpersist::db_expr",TpExprCmd,NULL,NULL);
     if(Tcl_EvalEx(interp,tpersist_script,-1,TCL_EVAL_GLOBAL)!=TCL_OK) {
         Tcl_Namespace *ns=Tcl_FindNamespace(interp,"::tpersist",NULL,TCL_GLOBAL_ONLY);
         if(ns) Tcl_DeleteNamespace(ns);

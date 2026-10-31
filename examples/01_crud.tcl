@@ -17,20 +17,29 @@ try {
     }
 
     # Reuse the same query with different parameter values.
-    set adults [db_where [db_select $users -columns {id name age}] \
-        [db_ge [db_col age] [db_param minimum -type integer]]]
-    set adults [db_limit [db_order_by $adults [db_desc [db_col age]]] 10]
+    # Builder form:
+    # set adults [db_where [db_select $users -columns {id name age}] \
+    #     [db_ge [db_col age] [db_param minimum -type integer]]]
+    # set adults [db_limit [db_order_by $adults [db_desc [db_col age]]] 10]
+    set adults [db_where [db_select $users -expr {id, name, age}] -expr {age >= :minimum}]
+    set adults [db_limit [db_order_by $adults -expr {age DESC}] 10]
     puts "Adults: [dict get [db_execute $db $adults -params {minimum 18}] rows]"
     db_commit $db
 
     db_transaction $db {
+        # set birthday [db_values [db_update $users] \
+        #     [dict create age [db_add [db_col age] [db_value 1 -type integer]]] -expressions]
         set birthday [db_values [db_update $users] \
-            [dict create age [db_add [db_col age] [db_value 1 -type integer]]] -expressions]
-        set birthday [db_where $birthday [db_eq [db_col name] [db_value Bob]]]
-        puts "Updated: [dict get [db_execute $db [db_returning $birthday name age]] rows]"
+            [dict create age [db_expr {age + 1}]] -expressions]
+        # set birthday [db_where $birthday [db_eq [db_col name] [db_value Bob]]]
+        set birthday [db_where $birthday -expr {name = 'Bob'}]
+        # puts "Updated: [dict get [db_execute $db [db_returning $birthday name age]] rows]"
+        puts "Updated: [dict get [db_execute $db [db_returning $birthday -expr {name, age}]] rows]"
 
-        set remove [db_where [db_delete $users] [db_eq [db_col name] [db_value Alice]]]
+        # set remove [db_where [db_delete $users] [db_eq [db_col name] [db_value Alice]]]
+        set remove [db_where [db_delete $users] -expr {name = 'Alice'}]
         puts "Deleted: [dict get [db_execute $db $remove] rowcount]"
     }
-    puts "Remaining: [dict get [db_execute $db [db_order_by [db_select $users] id]] rows]"
+    # puts "Remaining: [dict get [db_execute $db [db_order_by [db_select $users] id]] rows]"
+    puts "Remaining: [dict get [db_execute $db [db_order_by [db_select $users] -expr {id}]] rows]"
 } finally { db_disconnect $db }

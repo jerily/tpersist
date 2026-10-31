@@ -46,4 +46,11 @@ Tcl_Obj *TpColumn(TpContext *c, Tcl_Obj *o);
 Tcl_Obj *TpTable(TpContext *c, Tcl_Obj *o);
 int TpBuilderCmd(ClientData data, Tcl_Interp *interp, int objc, Tcl_Obj *const objv[]);
 int TpCompileCmd(ClientData data, Tcl_Interp *interp, int objc, Tcl_Obj *const objv[]);
+enum { TP_PROJECTION=1, TP_ORDERING=2, TP_STAR=4 };
+typedef enum {
+    TP_PARSE_SINGLE, TP_PARSE_PREDICATE, TP_PARSE_COLUMNS, TP_PARSE_ORDER, TP_PARSE_GROUP
+} TpParseMode;
+int TpCheckExpression(TpContext *c, Tcl_Obj *expression, int flags);
+int TpParseExpression(TpContext *c, Tcl_Obj *source, TpParseMode mode, Tcl_Obj **result);
+int TpExprCmd(ClientData data, Tcl_Interp *interp, int objc, Tcl_Obj *const objv[]);
 #endif

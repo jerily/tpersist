@@ -16,10 +16,13 @@ try {
         }
     }
 
-    set everyone [$database select users -columns {name age}]
+    # set everyone [$database select users -columns {name age}]
+    set everyone [$database select users -expr {name, age}]
     set adults [$everyone fork]
-    $adults where [db_ge [db_col age] [db_value 18 -type integer]]
-    $adults order_by [db_desc [db_col age]]
+    # $adults where [db_ge [db_col age] [db_value 18 -type integer]]
+    $adults where -expr {age >= 18}
+    # $adults order_by [db_desc [db_col age]]
+    $adults order_by -expr {age DESC}
     $adults limit 10
     puts "Adults: [$adults all]"
     puts "Everyone: [$everyone all]"

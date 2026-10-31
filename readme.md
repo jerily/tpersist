@@ -10,9 +10,9 @@ Generated **With help from AI**.
 package require tpersist
 namespace import ::tpersist::db_*
 
-set query [db_select users -columns {id name}]
-set query [db_where $query [db_ge [db_col age] [db_value 18 -type integer]]]
-set query [db_limit [db_order_by $query name] 20]
+set query [db_select users -expr {id, name}]
+set query [db_where $query -expr {age >= 18}]
+set query [db_limit [db_order_by $query -expr {name}] 20]
 puts [dict get [db_compile $query] sql]
 ```
 

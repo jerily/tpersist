@@ -23,7 +23,8 @@ proc populate {db} {
     }
 }
 proc names {db} {
-    set rows [dict get [db_execute $db [db_order_by [db_select users -columns name] name]] rows]
+    # set rows [dict get [db_execute $db [db_order_by [db_select users -columns name] name]] rows]
+    set rows [dict get [db_execute $db [db_order_by [db_select users -expr {name}] -expr {name}]] rows]
     return [lmap row $rows {dict get $row name}]
 }
 
@@ -31,11 +32,15 @@ test sqlite-1.1 {CRUD workflow with a reusable named query template} -constraint
     set db [fresh]
     populate $db
 } -body {
-    set template [db_where [db_select users -columns {name age}] [db_ge [db_col age] [db_param minimum -type integer]]]
-    set first [dict get [db_execute $db [db_order_by $template name] -params {minimum 30}] rows]
-    set update [db_where [db_values [db_update users] {age 31}] [db_eq [db_col name] [db_value Alice]]]
+    # set template [db_where [db_select users -columns {name age}] [db_ge [db_col age] [db_param minimum -type integer]]]
+    set template [db_where [db_select users -expr {name, age}] -expr {age >= :minimum}]
+    # set first [dict get [db_execute $db [db_order_by $template name] -params {minimum 30}] rows]
+    set first [dict get [db_execute $db [db_order_by $template -expr {name}] -params {minimum 30}] rows]
+    # set update [db_where [db_values [db_update users] {age 31}] [db_eq [db_col name] [db_value Alice]]]
+    set update [db_where [db_values [db_update users] {age 31}] -expr {name = 'Alice'}]
     set count [dict get [db_execute $db $update] rowcount]
-    db_execute $db [db_where [db_delete users] [db_lt [db_col age] [db_value 25 -type integer]]]
+    # db_execute $db [db_where [db_delete users] [db_lt [db_col age] [db_value 25 -type integer]]]
+    db_execute $db [db_where [db_delete users] -expr {age < 25}]
     db_commit $db
     list $first $count [names $db]
 } -cleanup {db_disconnect $db} -result {{{name Alice age 30} {name Carol age 40}} 1 {Alice Carol}}
@@ -75,7 +80,8 @@ test sqlite-1.4 {bound injection text does not execute and caller variables are 
 test sqlite-1.5 {defaults and RETURNING produce rows for writes} -constraints sqlite -setup {
     set db [fresh]
 } -body {
-    set result [db_execute $db [db_returning [db_values [db_insert users] {name Alice}] id name]]
+    # set result [db_execute $db [db_returning [db_values [db_insert users] {name Alice}] id name]]
+    set result [db_execute $db [db_returning [db_values [db_insert users] {name Alice}] -expr {id, name}]]
     dict get $result rows
 } -cleanup {db_disconnect $db} -result {{id 1 name Alice}}
 
@@ -101,16 +107,20 @@ test sqlite-1.7 {left joins and grouped aggregates execute} -constraints sqlite 
     foreach amount {10 20} {
         db_execute $db [db_values [db_insert orders] [dict create id $amount user_id 1 amount $amount]]
     }
-    set s [db_select [db_table users -as u] -columns [list [db_col name -table u] [db_alias [db_count [db_col id -table o]] orders]]]
-    set s [db_join $s [db_table orders -as o] [db_eq [db_col id -table u] [db_col user_id -table o]] -type left]
-    set s [db_order_by [db_group_by $s [db_col name -table u]] [db_col name -table u]]
+    # set s [db_select [db_table users -as u] -columns [list [db_col name -table u] [db_alias [db_count [db_col id -table o]] orders]]]
+    set s [db_select [db_table users -as u] -expr {u.name, COUNT(o.id) AS orders}]
+    # set s [db_join $s [db_table orders -as o] [db_eq [db_col id -table u] [db_col user_id -table o]] -type left]
+    set s [db_join $s [db_table orders -as o] -expr {u.id = o.user_id} -type left]
+    # set s [db_order_by [db_group_by $s [db_col name -table u]] [db_col name -table u]]
+    set s [db_order_by [db_group_by $s -expr {u.name}] -expr {u.name}]
     dict get [db_execute $db $s] rows
 } -cleanup {db_disconnect $db} -result {{name Alice orders 2} {name Bob orders 0} {name Carol orders 0}}
 
 test sqlite-1.8 {duplicate output names fail before silently overwriting cells} -constraints sqlite -setup {
     set db [fresh]; populate $db
 } -body {
-    db_execute $db [db_select users -columns {name name}]
+    # db_execute $db [db_select users -columns {name name}]
+    db_execute $db [db_select users -expr {name, name}]
 } -cleanup {db_disconnect $db} -returnCodes error -match glob -result {*duplicate result column names*}
 
 test sqlite-1.9 {empty result remains a successful query} -constraints sqlite -setup {
@@ -119,6 +129,17 @@ test sqlite-1.9 {empty result remains a successful query} -constraints sqlite -s
     set result [db_execute $db [db_select users]]
     list [dict get $result rows] [dict get $result rowcount]
 } -cleanup {db_disconnect $db} -result {{} -1}
+
+test sqlite-expressions {parsed arithmetic and boolean precedence affect the expected rows} -constraints sqlite -setup {
+    set db [fresh]; populate $db
+} -body {
+    # db_select users -columns [list [db_col name] [db_alias [db_add [db_col age] [db_mul [db_value 2 -type integer] [db_value 3 -type integer]]] adjusted]]
+    set s [db_select users -expr {name, age + 2 * 3 AS adjusted}]
+    # db_where $s [db_or [db_not [db_lt [db_col age] [db_value 30 -type integer]]] [db_and [db_eq [db_col name] [db_value Bob -type text]] [db_is_not_null [db_col note]]]]
+    set s [db_where $s -expr {NOT age < 30 OR name = 'Bob' AND note IS NOT NULL}]
+    # db_order_by $s [db_desc [db_col age]]
+    dict get [db_execute $db [db_order_by $s -expr {age DESC}]] rows
+} -cleanup {db_disconnect $db} -result {{name Carol adjusted 46} {name Alice adjusted 36}}
 
 test sqlite-2.1 {autobegin and rollback undo writes} -constraints sqlite -setup {
     set db [fresh]
@@ -230,7 +251,8 @@ test sqlite-3.1 {row loop supports break and continue in caller scope} -constrai
     set db [fresh]; populate $db
 } -body {
     set names {}
-    set count [db_foreach_row $db row [db_order_by [db_select users] id] {
+    # set count [db_foreach_row $db row [db_order_by [db_select users] id] { ... }]
+    set count [db_foreach_row $db row [db_order_by [db_select users] -expr {id}] {
         if {[dict get $row name] eq "Alice"} continue
         lappend names [dict get $row name]
         break
@@ -241,7 +263,8 @@ test sqlite-3.1 {row loop supports break and continue in caller scope} -constrai
 test sqlite-3.2 {row loop return propagates and releases its statements} -constraints sqlite -setup {
     set db [fresh]; populate $db
     proc rowReturn {db} {
-        db_foreach_row $db row [db_order_by [db_select users] id] { return [dict get $row name] }
+        # db_foreach_row $db row [db_order_by [db_select users] id] { return [dict get $row name] }
+        db_foreach_row $db row [db_order_by [db_select users] -expr {id}] { return [dict get $row name] }
         error unreachable
     }
 } -body {

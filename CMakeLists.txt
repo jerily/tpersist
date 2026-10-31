@@ -21,7 +21,7 @@ string(REGEX REPLACE "(..)" "0x\\1," TPERSIST_SCRIPT "${TPERSIST_SCRIPT}")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/tpersist_script.h"
     "static const char tpersist_script[] = {${TPERSIST_SCRIPT}0};\n")
 
-add_library(tpersist src/library.c src/statements.c src/compiler.c)
+add_library(tpersist src/library.c src/statements.c src/compiler.c src/expressions.c)
 set_target_properties(tpersist PROPERTIES POSITION_INDEPENDENT_CODE ON PREFIX "lib")
 target_include_directories(tpersist PRIVATE "${TCL_INCLUDE_PATH}" "${CMAKE_CURRENT_BINARY_DIR}")
 target_compile_definitions(tpersist PRIVATE BUILD_tpersist TCL_THREADS TPERSIST_VERSION="${PROJECT_VERSION}")

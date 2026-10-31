@@ -18,7 +18,7 @@ destructor and no connection is needed to build or compile a statement.
 
 | Command | Result |
 |---|---|
-| `db_select table ?-columns columnList?` | SELECT, with `*` as the default projection |
+| `db_select table ?-columns columnList?` or `db_select table -expr text` | SELECT, with `*` as the default projection |
 | `db_insert table` | INSERT; no assignments means a default-values insert |
 | `db_update table` | UPDATE; requires assignments before compilation |
 | `db_delete table` | DELETE |
@@ -28,6 +28,7 @@ destructor and no connection is needed to build or compile a statement.
 | `db_value value ?-type type?` | Bound literal value |
 | `db_param name ?-type type?` | Named parameter supplied when compiling or executing |
 | `db_null` | SQL NULL expression |
+| `db_expr text` | Parse one SQL-style expression into the same dictionary nodes |
 
 A statement's `table` argument accepts a table name, a `db_table` reference, or
 a `db_define_table` definition. SELECT projection lists accept column names or
@@ -52,6 +53,81 @@ become raw SQL. Constructors may defer detailed validation to compilation.
 `db_in` takes a list of expressions, not one bound list. Empty IN compiles to
 false and empty NOT IN to true. SQL's normal three-valued NULL logic applies;
 use `db_is_null`, not `db_eq ... [db_null]`.
+
+## Expression strings
+
+`db_expr` parses one expression into ordinary builder dictionaries. An explicit
+`-expr` option parses strings directly in statement commands:
+
+```tcl
+set query [db_select users -expr {id, name, age + 1 AS next_age}]
+set query [db_where $query -expr {age >= :minimum AND active = TRUE}]
+set query [db_order_by $query -expr {age DESC, name ASC}]
+set result [db_execute $connection $query -params {minimum 18}]
+```
+
+| Form | Parsed context |
+|---|---|
+| `db_where statement -expr text` | One predicate |
+| `db_having statement -expr text` | One predicate |
+| `db_join statement table -expr text ?-type inner\|left?` | One ON predicate |
+| `db_select table -expr text` | Comma-separated projections, including `AS` aliases and `*` |
+| `db_returning statement -expr text` | Comma-separated returned projections |
+| `db_order_by statement -expr text` | Comma-separated expressions, optionally followed by `ASC` or `DESC` |
+| `db_group_by statement -expr text` | Comma-separated grouping expressions |
+
+These forms have the same additive behavior as their dictionary counterparts.
+Choose either `-expr` or the existing arguments within one call; subsequent calls
+can freely mix both interfaces. `db_select -expr` replaces the `-columns` option
+for that call. The optional OO layer forwards the same options, for example
+`$adults where -expr {age >= 18}`.
+
+Supported syntax includes `=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`, arithmetic
+`+ - * /`, unary signs, parentheses, `AND`, `OR`, `NOT`, `LIKE`, `NOT LIKE`,
+`IN`, `NOT IN`, `IS NULL`, and `IS NOT NULL`. Functions are limited to `COUNT`,
+`SUM`, `AVG`, `MIN`, and `MAX`; `COUNT(*)` is supported. Empty IN lists follow
+the builder's true/false rules. Aliases require explicit `AS`.
+
+Precedence, from strongest to weakest, is unary signs, multiplication/division,
+addition/subtraction, comparisons/IN/LIKE/IS NULL, NOT, AND, OR. Arithmetic of
+the same precedence associates left. Parentheses override precedence. Chained
+comparisons such as `a < b < c` are rejected; write `a < b AND b < c`.
+
+Keywords and function names are case-insensitive; identifier and parameter names
+retain their spelling. Unquoted identifiers and parameter names use ASCII letters
+or underscore followed by letters, digits, or underscores. Quote identifiers
+containing spaces, Unicode, or reserved words with double quotes or backticks.
+Double the enclosing quote inside an identifier. Qualified columns use
+`table.column`; schema qualification is still configured through `db_table`.
+
+Single quotes delimit text values, with `''` representing a literal quote.
+Backslashes are literal characters, not SQL escape sequences. Integer literals
+use decimal notation even with leading zeroes and must fit signed 64-bit values.
+Fractional and exponent literals retain their exact text and use the `decimal`
+parameter type. TRUE/FALSE use `boolean`. Named `:parameters` use `auto`; use
+`db_param -type` in the builder interface when an explicit parameter type is
+needed. NULL becomes the existing NULL expression.
+
+Literals are bound parameters, never inserted as raw SQL. Use Tcl braces around
+expression strings to avoid Tcl substitution before the command runs, and pass
+application data through `:parameters`. The parser never evaluates Tcl or SQL.
+It rejects comments, semicolons, full statements, unsupported functions, and
+syntax outside this subset. Parse errors have an `-errorcode` of
+`TPERSIST PARSE position` and report a one-based Tcl character position.
+Nesting and generated tree depth are bounded to protect the native stack.
+
+For assignments, continue using dictionaries, optionally with parsed values:
+
+```tcl
+set update [db_values [db_update users] \
+    [dict create age [db_expr {age + 1}]] -expressions]
+```
+
+Standalone `db_expr` accepts a single expression, including an optional alias or
+sort direction for later use in an appropriate context. It does not accept a
+comma-separated list; projection/order/group commands handle those lists through
+`-expr`. Without `-expr`, existing strings remain literal column names or the
+existing dictionary arguments, with no implicit parsing.
 
 ## Additive composition
 
