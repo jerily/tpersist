@@ -1,0 +1,316 @@
+package require tcltest 2
+package require tpersist
+namespace import ::tcltest::test
+namespace import ::tpersist::db_*
+::tcltest::testConstraint sqlite [expr {![catch {package require tdbc::sqlite3}]}]
+
+proc fresh {{autobegin 1}} {
+    set db [db_connect -database :memory: -autobegin $autobegin]
+    db_create_table $db [db_define_table users {
+        id {type integer primary_key 1 auto_increment 1}
+        name {type text unique 1 not_null 1}
+        age {type integer}
+        note {type text}
+        payload {type binary}
+    }]
+    return $db
+}
+proc populate {db} {
+    db_transaction $db {
+        foreach {name age} {Alice 30 Bob 20 Carol 40} {
+            db_execute $db [db_values [db_insert users] [dict create name $name age $age]]
+        }
+    }
+}
+proc names {db} {
+    # set rows [dict get [db_execute $db [db_order_by [db_select users -columns name] name]] rows]
+    set rows [dict get [db_execute $db [db_order_by [db_select users -expr {name}] -expr {name}]] rows]
+    return [lmap row $rows {dict get $row name}]
+}
+
+test sqlite-1.1 {CRUD workflow with a reusable named query template} -constraints sqlite -setup {
+    set db [fresh]
+    populate $db
+} -body {
+    # set template [db_where [db_select users -columns {name age}] [db_ge [db_col age] [db_param minimum -type integer]]]
+    set template [db_where [db_select users -expr {name, age}] -expr {age >= :minimum}]
+    # set first [dict get [db_execute $db [db_order_by $template name] -params {minimum 30}] rows]
+    set first [dict get [db_execute $db [db_order_by $template -expr {name}] -params {minimum 30}] rows]
+    # set update [db_where [db_values [db_update users] {age 31}] [db_eq [db_col name] [db_value Alice]]]
+    set update [db_where [db_values [db_update users] {age 31}] -expr {name = 'Alice'}]
+    set count [dict get [db_execute $db $update] rowcount]
+    # db_execute $db [db_where [db_delete users] [db_lt [db_col age] [db_value 25 -type integer]]]
+    db_execute $db [db_where [db_delete users] -expr {age < 25}]
+    db_commit $db
+    list $first $count [names $db]
+} -cleanup {db_disconnect $db} -result {{{name Alice age 30} {name Carol age 40}} 1 {Alice Carol}}
+
+test sqlite-1.2 {NULL, empty strings, Unicode, binary and wide integers round trip} -constraints sqlite -setup {
+    set db [fresh]
+} -body {
+    set payload [binary decode hex 0001ff0041]
+    db_execute $db [db_values [db_insert users] [dict create \
+        name [db_value "Zoë 世界"] age [db_value 9007199254740993 -type bigint] \
+        note [db_value {} -type text] payload [db_value $payload -type binary]] -expressions]
+    db_execute $db [db_values [db_insert users] [dict create name [db_value Null] note [db_null]] -expressions]
+    set rows [dict get [db_execute $db [db_order_by [db_select users] id]] rows]
+    set a [lindex $rows 0]; set b [lindex $rows 1]
+    list [dict get $a name] [dict get $a age] [dict exists $a note] [dict get $a note] \
+        [binary encode hex [dict get $a payload]] [dict exists $b note]
+} -cleanup {db_disconnect $db} -result {{Zoë 世界} 9007199254740993 1 {} 0001ff0041 0}
+
+test sqlite-1.3 {explicit named NULL is distinct from a missing parameter} -constraints sqlite -setup {
+    set db [fresh]
+} -body {
+    set s [db_values [db_insert users] [dict create name [db_param name] note [db_param note]] -expressions]
+    set missing [catch {db_execute $db $s -params {name A}} msg opts]
+    db_execute $db $s -params {name A} -nulls note
+    list $missing [dict get $opts -errorcode] [dict exists [lindex [dict get [db_execute $db [db_select users]] rows] 0] note]
+} -cleanup {db_disconnect $db} -result {1 {TPERSIST PARAMETER} 0}
+
+test sqlite-1.4 {bound injection text does not execute and caller variables are not bindings} -constraints sqlite -setup {
+    set db [fresh]
+} -body {
+    set p1 unintended
+    set attack {x'); DROP TABLE users; --}
+    db_execute $db [db_values [db_insert users] [dict create name $attack]]
+    names $db
+} -cleanup {db_disconnect $db} -result [list {x'); DROP TABLE users; --}]
+
+test sqlite-1.5 {defaults and RETURNING produce rows for writes} -constraints sqlite -setup {
+    set db [fresh]
+} -body {
+    # set result [db_execute $db [db_returning [db_values [db_insert users] {name Alice}] id name]]
+    set result [db_execute $db [db_returning [db_values [db_insert users] {name Alice}] -expr {id, name}]]
+    dict get $result rows
+} -cleanup {db_disconnect $db} -result {{id 1 name Alice}}
+
+test sqlite-1.6 {foreign keys and unique indexes are enforced} -constraints sqlite -setup {
+    set db [fresh]
+} -body {
+    db_create_table $db [db_define_table orders {id {type integer primary_key 1} user_id {type integer} amount {type integer}} \
+        -foreign_keys [list [dict create columns user_id table users referenced_columns id on_delete cascade]]]
+    db_create_index $db users_age users age -unique 1
+    db_execute $db [db_values [db_insert users] {name A age 30}]
+    set duplicate [catch {db_execute $db [db_values [db_insert users] {name B age 30}]}]
+    set missing [catch {db_execute $db [db_values [db_insert orders] {id 1 user_id 999 amount 3}]}]
+    db_execute $db [db_values [db_insert orders] {id 1 user_id 1 amount 3}]
+    db_execute $db [db_delete users]
+    list $duplicate $missing [dict get [db_execute $db [db_select orders]] rows]
+} -cleanup {db_disconnect $db} -result {1 1 {}}
+
+test sqlite-1.7 {left joins and grouped aggregates execute} -constraints sqlite -setup {
+    set db [fresh]
+    populate $db
+    db_create_table $db [db_define_table orders {id {type integer} user_id {type integer} amount {type integer}}]
+} -body {
+    foreach amount {10 20} {
+        db_execute $db [db_values [db_insert orders] [dict create id $amount user_id 1 amount $amount]]
+    }
+    # set s [db_select [db_table users -as u] -columns [list [db_col name -table u] [db_alias [db_count [db_col id -table o]] orders]]]
+    set s [db_select [db_table users -as u] -expr {u.name, COUNT(o.id) AS orders}]
+    # set s [db_join $s [db_table orders -as o] [db_eq [db_col id -table u] [db_col user_id -table o]] -type left]
+    set s [db_join $s [db_table orders -as o] -expr {u.id = o.user_id} -type left]
+    # set s [db_order_by [db_group_by $s [db_col name -table u]] [db_col name -table u]]
+    set s [db_order_by [db_group_by $s -expr {u.name}] -expr {u.name}]
+    dict get [db_execute $db $s] rows
+} -cleanup {db_disconnect $db} -result {{name Alice orders 2} {name Bob orders 0} {name Carol orders 0}}
+
+test sqlite-1.8 {duplicate output names fail before silently overwriting cells} -constraints sqlite -setup {
+    set db [fresh]; populate $db
+} -body {
+    # db_execute $db [db_select users -columns {name name}]
+    db_execute $db [db_select users -expr {name, name}]
+} -cleanup {db_disconnect $db} -returnCodes error -match glob -result {*duplicate result column names*}
+
+test sqlite-1.9 {empty result remains a successful query} -constraints sqlite -setup {
+    set db [fresh]
+} -body {
+    set result [db_execute $db [db_select users]]
+    list [dict get $result rows] [dict get $result rowcount]
+} -cleanup {db_disconnect $db} -result {{} -1}
+
+test sqlite-expressions {parsed arithmetic and boolean precedence affect the expected rows} -constraints sqlite -setup {
+    set db [fresh]; populate $db
+} -body {
+    # db_select users -columns [list [db_col name] [db_alias [db_add [db_col age] [db_mul [db_value 2 -type integer] [db_value 3 -type integer]]] adjusted]]
+    set s [db_select users -expr {name, age + 2 * 3 AS adjusted}]
+    # db_where $s [db_or [db_not [db_lt [db_col age] [db_value 30 -type integer]]] [db_and [db_eq [db_col name] [db_value Bob -type text]] [db_is_not_null [db_col note]]]]
+    set s [db_where $s -expr {NOT age < 30 OR name = 'Bob' AND note IS NOT NULL}]
+    # db_order_by $s [db_desc [db_col age]]
+    dict get [db_execute $db [db_order_by $s -expr {age DESC}]] rows
+} -cleanup {db_disconnect $db} -result {{name Carol adjusted 46} {name Alice adjusted 36}}
+
+test sqlite-2.1 {autobegin and rollback undo writes} -constraints sqlite -setup {
+    set db [fresh]
+} -body {
+    db_execute $db [db_values [db_insert users] {name Alice}]
+    db_rollback $db
+    names $db
+} -cleanup {db_disconnect $db} -result {}
+
+test sqlite-2.2 {transaction errors preserve the original error and roll back} -constraints sqlite -setup {
+    set db [fresh]
+} -body {
+    catch {db_transaction $db {
+        db_execute $db [db_values [db_insert users] {name Alice}]
+        return -code error -errorcode {APP REJECTED} rejected
+    }} message options
+    list $message [dict get $options -errorcode] [names $db]
+} -cleanup {db_disconnect $db} -result {rejected {APP REJECTED} {}}
+
+test sqlite-2.3 {return commits and exits the calling procedure} -constraints sqlite -setup {
+    set db [fresh]
+    proc txReturn {db} {
+        db_transaction $db {
+            db_execute $db [db_values [db_insert users] {name Alice}]
+            return done
+        }
+        error unreachable
+    }
+} -body {
+    list [txReturn $db] [names $db]
+} -cleanup {rename txReturn {}; db_disconnect $db} -result {done Alice}
+
+test sqlite-2.4 {break and continue commit and preserve caller loop control} -constraints sqlite -setup {
+    set db [fresh]
+} -body {
+    set seen {}
+    foreach name {Alice Bob Carol} {
+        db_transaction $db {
+            db_execute $db [db_values [db_insert users] [dict create name $name]]
+            if {$name eq "Alice"} continue
+            if {$name eq "Bob"} break
+        }
+        lappend seen unreachable
+    }
+    list $seen [names $db]
+} -cleanup {db_disconnect $db} -result {{} {Alice Bob}}
+
+test sqlite-2.5 {nonstandard Tcl return codes roll back} -constraints sqlite -setup {
+    set db [fresh]
+    proc txCustom {db} {
+        db_transaction $db {
+            db_execute $db [db_values [db_insert users] {name Alice}]
+            return -code 7 -level 0 custom
+        }
+    }
+} -body {
+    set code [catch {txCustom $db} message]
+    list $code $message [names $db]
+} -cleanup {rename txCustom {}; db_disconnect $db} -result {7 custom {}}
+
+test sqlite-2.6 {nested transaction failure rolls back its savepoint only} -constraints sqlite -setup {
+    set db [fresh]
+} -body {
+    db_transaction $db {
+        db_execute $db [db_values [db_insert users] {name Alice}]
+        catch {db_transaction $db {
+            db_execute $db [db_values [db_insert users] {name Bob}]
+            error rejected
+        }}
+        db_execute $db [db_values [db_insert users] {name Carol}]
+    }
+    names $db
+} -cleanup {db_disconnect $db} -result {Alice Carol}
+
+test sqlite-2.7 {explicit savepoints require reverse creation order} -constraints sqlite -setup {
+    set db [fresh]
+} -body {
+    db_begin $db
+    db_savepoint $db first
+    db_savepoint $db second
+    set invalid [catch {db_release $db first}]
+    db_execute $db [db_values [db_insert users] {name Alice}]
+    db_rollback_to $db second
+    db_release $db second
+    db_release $db first
+    db_commit $db
+    list $invalid [names $db]
+} -cleanup {db_disconnect $db} -result {1 {}}
+
+test sqlite-2.8 {disconnect rolls back outstanding transactions} -constraints sqlite -setup {
+    set filename [::tcltest::makeFile {} rollback.sqlite]
+    set db [db_connect -database $filename]
+    db_create_table $db [db_define_table users {name {type text}}]
+} -body {
+    db_execute $db [db_values [db_insert users] {name Alice}]
+    db_disconnect $db
+    set db [db_connect -database $filename]
+    names $db
+} -cleanup {db_disconnect $db; ::tcltest::removeFile rollback.sqlite} -result {}
+
+test sqlite-2.9 {autobegin can be disabled for native TDBC autocommit} -constraints sqlite -setup {
+    set db [fresh 0]
+} -body {
+    db_execute $db [db_values [db_insert users] {name Alice}]
+    list [catch {db_rollback $db}] [names $db]
+} -cleanup {db_disconnect $db} -result {1 Alice}
+
+test sqlite-3.1 {row loop supports break and continue in caller scope} -constraints sqlite -setup {
+    set db [fresh]; populate $db
+} -body {
+    set names {}
+    # set count [db_foreach_row $db row [db_order_by [db_select users] id] { ... }]
+    set count [db_foreach_row $db row [db_order_by [db_select users] -expr {id}] {
+        if {[dict get $row name] eq "Alice"} continue
+        lappend names [dict get $row name]
+        break
+    }]
+    list $count $names
+} -cleanup {db_disconnect $db} -result {2 Bob}
+
+test sqlite-3.2 {row loop return propagates and releases its statements} -constraints sqlite -setup {
+    set db [fresh]; populate $db
+    proc rowReturn {db} {
+        # db_foreach_row $db row [db_order_by [db_select users] id] { return [dict get $row name] }
+        db_foreach_row $db row [db_order_by [db_select users] -expr {id}] { return [dict get $row name] }
+        error unreachable
+    }
+} -body {
+    set result [rowReturn $db]
+    list $result [llength [[dict get [::tpersist::_connection $db] command] statements]]
+} -cleanup {rename rowReturn {}; db_disconnect $db} -result {Alice 0}
+
+test sqlite-3.3 {row loop errors propagate and release resources} -constraints sqlite -setup {
+    set db [fresh]; populate $db
+} -body {
+    catch {db_foreach_row $db row [db_select users] {error rejected}} message
+    list $message [llength [[dict get [::tpersist::_connection $db] command] statements]]
+} -cleanup {db_disconnect $db} -result {rejected 0}
+
+test sqlite-3.4 {database errors release prepared statements and preserve TDBC error codes} -constraints sqlite -setup {
+    set db [fresh]
+} -body {
+    set native [[dict get [::tpersist::_connection $db] command] prepare {SELECT * FROM nonexistent}]
+    catch {$native execute {}} nativeMsg nativeOpts
+    $native close
+    catch {db_execute $db [db_select nonexistent]} msg opts
+    list [expr {[dict get $opts -errorcode] eq [dict get $nativeOpts -errorcode]}] \
+        [llength [[dict get [::tpersist::_connection $db] command] statements]]
+} -cleanup {db_disconnect $db} -result {1 0}
+
+test sqlite-3.5 {closed and forged connection handles are rejected} -constraints sqlite -body {
+    set db [fresh]
+    db_disconnect $db
+    list [catch {db_disconnect $db}] [catch {db_execute {not a handle} [db_select users]}]
+} -result {1 1}
+
+test sqlite-3.6 {interpreter deletion cleans up owned connections} -constraints sqlite -body {
+    interp create child
+    child eval [list set auto_path $::auto_path]
+    child eval {
+        package require tpersist
+        namespace import ::tpersist::db_*
+        set db [db_connect -database :memory:]
+        db_create_table $db [db_define_table users {name {type text}}]
+        db_execute $db [db_values [db_insert users] {name Alice}]
+    }
+    interp delete child
+    expr {![interp exists child]}
+} -cleanup {if {[interp exists child]} {interp delete child}} -result 1
+
+rename fresh {}
+rename populate {}
+rename names {}
+::tcltest::cleanupTests

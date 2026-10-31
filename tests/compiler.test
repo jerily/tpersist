@@ -1,0 +1,188 @@
+package require tcltest 2
+package require tpersist
+namespace import ::tcltest::test
+namespace import ::tpersist::db_*
+
+test compile-1.1 {default SQLite and named projections} -body {
+    dict get [db_compile [db_select users -columns {id name}]] sql
+} -result {SELECT "id", "name" FROM "users"}
+
+test compile-1.2 {query branches do not change the shared base} -body {
+    set base [db_select users]
+    set adult [db_where $base [db_ge [db_col age] [db_value 18 -type integer]]]
+    set senior [db_where $adult [db_ge [db_col age] [db_value 65 -type integer]]]
+    list [dict exists $base where] [llength [dict get $adult where]] \
+        [dict get [db_compile $senior] params]
+} -result {0 1 {p1 18 p2 65}}
+
+test compile-1.3 {nested dictionary copies are independent} -body {
+    set first [db_where [db_select users] [db_eq [db_col id] [db_value 1]]]
+    set second $first
+    dict set second table name staff
+    list [dict get [db_compile $first] sql] [dict get [db_compile $second] sql]
+} -result {{SELECT * FROM "users" WHERE ("id" = :p1)} {SELECT * FROM "staff" WHERE ("id" = :p1)}}
+
+test compile-1.4 {boolean grouping survives additive filtering} -body {
+    set s [db_select users]
+    set s [db_where $s [db_or [db_eq [db_col role] [db_value editor]] [db_eq [db_col role] [db_value owner]]]]
+    set s [db_where $s [db_eq [db_col active] [db_value 1 -type boolean]]]
+    dict get [db_compile $s] sql
+} -result {SELECT * FROM "users" WHERE (("role" = :p1) OR ("role" = :p2)) AND ("active" = :p3)}
+
+test compile-1.5 {order appends, limit replaces, clear removes} -body {
+    set s [db_order_by [db_select users] [db_desc [db_col age]]]
+    set s [db_order_by $s [db_asc [db_col name]]]
+    set s [db_limit [db_limit $s 50] 10]
+    list [dict get [db_compile $s] sql] [dict get [db_compile $s] params] \
+        [dict get [db_compile [db_clear $s order_by]] sql]
+} -result {{SELECT * FROM "users" ORDER BY "age" DESC, "name" ASC LIMIT :p1} {p1 10} {SELECT * FROM "users" LIMIT :p1}}
+
+foreach {dialect expected} {
+    sqlite {SELECT * FROM "users" LIMIT -1 OFFSET :p1}
+    postgresql {SELECT * FROM "users" OFFSET :p1}
+    mysql {SELECT * FROM `users` LIMIT 18446744073709551615 OFFSET :p1}
+} {
+    test compile-pagination-$dialect {offset without limit is dialect-specific} -body {
+        dict get [db_compile [db_offset [db_select users] 4] -dialect $dialect] sql
+    } -result $expected
+}
+
+test compile-2.1 {hostile values are parameters, not SQL} -body {
+    set attack {Robert'); DROP TABLE users; --}
+    set c [db_compile [db_where [db_select users] [db_eq [db_col name] [db_value $attack]]]]
+    list [string first $attack [dict get $c sql]] [expr {[dict get $c params p1] eq $attack}]
+} -result {-1 1}
+
+test compile-2.2 {identifiers are escaped as identifiers} -body {
+    set s [db_select {a"; DROP TABLE users; --} -columns [list {x"y}]]
+    dict get [db_compile $s] sql
+} -result {SELECT "x""y" FROM "a""; DROP TABLE users; --"}
+
+test compile-2.3 {MySQL backticks are doubled} -body {
+    dict get [db_compile [db_select {a`b} -columns [list {x`y}]] -dialect mysql] sql
+} -result {SELECT `x``y` FROM `a``b`}
+
+test compile-2.4 {schema and table components stay separate} -body {
+    dict get [db_compile [db_select [db_table users -schema public -as u] -columns [list [db_col id -table u]]]] sql
+} -result {SELECT "u"."id" FROM "public"."users" AS "u"}
+
+test compile-2.5 {Tcl data never becomes a script} -body {
+    set ::unexpected 0
+    set value {[set ::unexpected 1]}
+    db_compile [db_values [db_insert users] [dict create name $value]]
+    set ::unexpected
+} -result 0
+
+test compile-3.1 {named template parameters are reusable and reported when missing} -body {
+    set s [db_where [db_select users] [db_ge [db_col age] [db_param minimum -type integer]]]
+    set s [db_where $s [db_lt [db_col other] [db_param minimum -type integer]]]
+    set missing [db_compile $s]
+    set ready [db_compile $s -params {minimum 21}]
+    list [dict get $missing required] [dict get $ready sql] [dict get $ready params]
+} -result {minimum {SELECT * FROM "users" WHERE ("age" >= :p1) AND ("other" < :p1)} {p1 21}}
+
+test compile-3.2 {explicit NULL omits the driver binding} -body {
+    set s [db_values [db_insert users] [dict create name [db_param name]] -expressions]
+    set c [db_compile $s -nulls name]
+    list [dict get $c params] [dict get $c required] [dict get $c types]
+} -result {{} {} {p1 auto}}
+
+test compile-3.3 {NULL predicates differ from empty strings} -body {
+    set s [db_where [db_select users] [db_and [db_is_null [db_col deleted]] [db_ne [db_col name] [db_value {} -type text]]]]
+    dict get [db_compile $s] sql
+} -result {SELECT * FROM "users" WHERE (("deleted" IS NULL) AND ("name" <> :p1))}
+
+test compile-3.4 {IN expands bound values and empty IN has defined semantics} -body {
+    set x [db_col id]
+    list [dict get [db_compile [db_where [db_select users] [db_in $x [list [db_value 1] [db_value 2]]]]] sql] \
+        [dict get [db_compile [db_where [db_select users] [db_in $x {}]]] sql] \
+        [dict get [db_compile [db_where [db_select users] [db_not_in $x {}]]] sql]
+} -result {{SELECT * FROM "users" WHERE ("id" IN (:p1, :p2))} {SELECT * FROM "users" WHERE (1 = 0)} {SELECT * FROM "users" WHERE (1 = 1)}}
+
+test compile-3.5 {large integers and binary values survive compilation} -body {
+    set bytes [binary decode hex 0001ff0041]
+    set c [db_compile [db_values [db_insert data] [dict create \
+        id [db_value 9007199254740993 -type bigint] payload [db_value $bytes -type binary]] -expressions]]
+    list [dict get $c params p1] [binary encode hex [dict get $c params p2]]
+} -result {9007199254740993 0001ff0041}
+
+test compile-4.1 {joins, aggregates, grouping, having and aliases} -body {
+    set s [db_select [db_table users -as u] -columns [list [db_col name -table u] [db_alias [db_count [db_col id -table o]] total]]]
+    set s [db_join $s [db_table orders -as o] [db_eq [db_col id -table u] [db_col user_id -table o]] -type left]
+    set s [db_group_by $s [db_col name -table u]]
+    set s [db_having $s [db_gt [db_count [db_col id -table o]] [db_value 1]]]
+    dict get [db_compile $s] sql
+} -result {SELECT "u"."name", COUNT("o"."id") AS "total" FROM "users" AS "u" LEFT JOIN "orders" AS "o" ON ("u"."id" = "o"."user_id") GROUP BY "u"."name" HAVING (COUNT("o"."id") > :p1)}
+
+test compile-4.2 {insert values merge and later assignments replace earlier ones} -body {
+    set s [db_values [db_insert users] {name Alice age 20}]
+    set changed [db_values $s {age 21}]
+    list [dict get [db_compile $s] params] [dict get [db_compile $changed] params]
+} -result {{p1 Alice p2 20} {p1 Alice p2 21}}
+
+test compile-4.3 {expression assignments support arithmetic and returning} -body {
+    set s [db_values [db_update counters] [dict create n [db_add [db_col n] [db_value 1]]] -expressions]
+    set s [db_where $s [db_eq [db_col id] [db_param id]]]
+    dict get [db_compile [db_returning $s n] -dialect postgresql -params {id 7}] sql
+} -result {UPDATE "counters" SET "n" = ("n" + :p1) WHERE ("id" = :p2) RETURNING "n"}
+
+test compile-4.4 {delete filtering} -body {
+    dict get [db_compile [db_where [db_delete users] [db_is_not_null [db_col deleted]]]] sql
+} -result {DELETE FROM "users" WHERE ("deleted" IS NOT NULL)}
+
+foreach {dialect expected} {
+    sqlite {INSERT INTO "users" DEFAULT VALUES}
+    postgresql {INSERT INTO "users" DEFAULT VALUES}
+    mysql {INSERT INTO `users` () VALUES ()}
+} {
+    test compile-default-insert-$dialect {empty insert uses backend syntax} -body {
+        dict get [db_compile [db_insert users] -dialect $dialect] sql
+    } -result $expected
+}
+
+foreach {label script pattern} {
+    unknown-field {db_compile {version 1 kind select table {node table name users} columns {{node star}} raw_sql DROP}} {*unknown*field*}
+    bad-version {db_compile {version 2 kind select table {node table name users}}} {*version*}
+    invalid-dict {db_compile not-a-dictionary} {*missing dictionary field*}
+    unknown-node {db_compile [db_where [db_select users] {node raw sql DROP}]} {*unknown expression*}
+    missing-expression {db_compile [db_where [db_select users] {node eq left {node col name id}}]} {*missing dictionary field*}
+    negative-limit {db_limit [db_select users] -1} {*nonnegative*}
+    negative-offset {db_compile [dict merge [db_select users] {offset -1}]} {*nonnegative*}
+    empty-projection {db_select users -columns {}} {*at least one column*}
+    where-insert {db_where [db_insert users] [db_value 1]} {*not valid*}
+    order-update {db_order_by [db_update users] id} {*not valid*}
+    empty-update {db_compile [db_update users]} {*assignment*}
+    mysql-returning {db_compile [db_returning [db_insert users] id] -dialect mysql} {*RETURNING*}
+    bad-dialect {db_compile [db_select users] -dialect oracle} {*dialect must*}
+    alias-filter {db_compile [db_where [db_select users] [db_alias [db_col id] x]]} {*aliases are only*}
+    order-filter {db_compile [db_where [db_select users] [db_asc [db_col id]]]} {*asc/desc*}
+    star-filter {db_compile [db_where [db_select users] [db_star]]} {*star is only*}
+    bind-typo {db_compile [db_select users] -params {unused 1}} {*not used*}
+    null-and-value {db_compile [db_where [db_select users] [db_eq [db_col id] [db_param id]]] -params {id 1} -nulls id} {*both a value and NULL*}
+    conflict-type {db_compile [db_where [db_select users] [db_eq [db_param x -type text] [db_param x -type integer]]]} {*conflicting types*}
+    type-invalid {db_compile [db_where [db_select users] [db_value x -type bogus]]} {*unknown parameter type*}
+    integer-invalid {db_compile [db_where [db_select users] [db_value 1.5 -type integer]]} {*integer*}
+    integer-overflow {db_compile [db_where [db_select users] [db_value 18446744073709551615 -type bigint]]} {*integer*}
+    integer-underflow {db_compile [db_where [db_select users] [db_value -9223372036854775809 -type bigint]]} {*integer*}
+    limit-overflow {db_limit [db_select users] 18446744073709551615} {*integer*}
+    nonfinite {db_compile [db_where [db_select users] [db_value Inf -type double]]} {*nonfinite*}
+    nul-identifier {db_compile [db_select "a\x00b"]} {*no NUL*}
+} {
+    test compile-invalid-$label {invalid input fails instead of changing SQL semantics} -body $script -returnCodes error -match glob -result $pattern
+}
+
+test compile-5.1 {excessive nesting is rejected before exhausting the C stack} -body {
+    set node [db_col active]
+    for {set i 0} {$i < 110} {incr i} { set node [db_not $node] }
+    db_compile [db_where [db_select users] $node]
+} -returnCodes error -match glob -result {*nesting exceeds*}
+
+test compile-5.2 {namespace imports are optional and do not overwrite Tcl commands} -body {
+    namespace eval ::isolated {
+        namespace import ::tpersist::db_select ::tpersist::db_compile
+        list [llength [info commands db_select]] [info commands select] \
+            [dict get [db_compile [db_select users]] dialect]
+    }
+} -cleanup {namespace delete ::isolated} -result {1 {} sqlite}
+
+::tcltest::cleanupTests

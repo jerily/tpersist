@@ -1,0 +1,54 @@
+name: Tests
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  tcl86:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: tpersist_test
+          POSTGRES_DB: tpersist_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: tpersist_test
+          MYSQL_ROOT_HOST: "%"
+          MYSQL_DATABASE: tpersist_test
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -ptpersist_test"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+    env:
+      TPERSIST_REQUIRE_SQLITE: "1"
+      TPERSIST_TEST_POSTGRESQL: "-host 127.0.0.1 -port 5432 -database tpersist_test -user postgres -password tpersist_test"
+      TPERSIST_TEST_MYSQL: "-host 127.0.0.1 -port 3306 -database tpersist_test -user root -password tpersist_test"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tcl and TDBC drivers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake tcl8.6-dev tcl8.6-tdbc tcl8.6-tdbc-sqlite3 tcl8.6-tdbc-postgres tcl8.6-tdbc-mysql
+      - name: Build and test shared extension
+        run: |
+          cmake -S . -B build -DTCL_INCLUDE_DIR=/usr/include/tcl8.6 -DTCL_TCLSH=/usr/bin/tclsh8.6
+          cmake --build build --parallel 2
+          ctest --test-dir build --output-on-failure
+      - name: Run examples
+        env:
+          TCLLIBPATH: ${{ github.workspace }}/build
+        run: |
+          for example in examples/0*.tcl; do
+            tclsh8.6 "$example"
+          done
+      - name: Test static embedding
+        run: |
+          cmake -S . -B build-static -DBUILD_SHARED_LIBS=OFF -DTCL_INCLUDE_DIR=/usr/include/tcl8.6 -DTCL_TCLSH=/usr/bin/tclsh8.6
+          cmake --build build-static --parallel 2
+          ctest --test-dir build-static --output-on-failure

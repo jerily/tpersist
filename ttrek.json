@@ -1,0 +1,20 @@
+{
+  "name": "tpersist",
+  "version": "0.1.0",
+  "dependencies": {
+    "tcl": ">=8.6.0 <10.0.0"
+  },
+  "build": {
+    "default": [
+      {
+        "cmd": "cmake_config",
+        "options": [
+          {"name": "TCL_LIBRARY_DIR", "value": "$INSTALL_DIR/lib"},
+          {"name": "TCL_INCLUDE_DIR", "value": "$INSTALL_DIR/include"}
+        ]
+      },
+      {"cmd": "make", "parallel": true},
+      {"cmd": "make_install"}
+    ]
+  }
+}
