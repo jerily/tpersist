@@ -120,7 +120,7 @@ test expr-3.3 {write filters and RETURNING use the same parser} -body {
     set update [db_values [db_update users] [dict create age [db_expr {age + 1}]] -expressions]
     set update [db_returning [db_where $update -expr {id = :id}] -expr {id, age AS new_age}]
     dict get [db_compile $update -params {id 7} -dialect postgresql] sql
-} -result {UPDATE "users" SET "age" = ("age" + :p1) WHERE ("id" = :p2) RETURNING "id", "age" AS "new_age"}
+} -result {UPDATE "users" SET "age" = ("age" + CAST(:p1 AS BIGINT)) WHERE ("id" = :p2) RETURNING "id", "age" AS "new_age"}
 
 test expr-3.4 {a standalone expression can carry a projection alias or sort direction} -body {
     list [db_expr {COUNT(*) AS total}] [db_expr {age DESC}] [db_expr {u.*}]

@@ -102,8 +102,16 @@ foreach dialect {postgresql mysql} {
         # db_where $decimal [db_not [db_like [db_col name] [db_value Skip% -type text]]]
         set decimal [db_where $decimal -expr {NOT (name LIKE 'Skip%')}]
         set total [dict get [lindex [dict get [db_execute $db $decimal] rows] 0] total]
-        list [dict get $row n] [dict get $row total] [expr {$total == 3.5}]
-    } -cleanup {backendCleanup $db $table} -result {2 3 1}
+        # db_select $table -columns [list [db_alias [db_add [db_col big] [db_value 1.25e-2 -type decimal]] total]]
+        set exponent [db_select $table -expr {big + 1.25e-2 AS total}]
+        set exponent [db_where $exponent -expr {name = 'Alice'}]
+        set small [dict get [lindex [dict get [db_execute $db $exponent] rows] 0] total]
+        # db_where [db_select $table] [db_lt [db_col id] [db_value 9007199254740993 -type integer]]
+        set large [db_where [db_select $table] -expr {id < 9007199254740993}]
+        set count [llength [dict get [db_execute $db $large] rows]]
+        list [dict get $row n] [dict get $row total] [expr {$total == 3.5}] \
+            [expr {$small == 1.0125}] $count
+    } -cleanup {backendCleanup $db $table} -result {2 3 1 1 3}
 }
 
 rename backendSetup {}

@@ -185,4 +185,39 @@ test compile-5.2 {namespace imports are optional and do not overwrite Tcl comman
     }
 } -cleanup {namespace delete ::isolated} -result {1 {} sqlite}
 
+test compile-6.1 {PostgreSQL numeric types are established before preparation} -body {
+    set s [db_select numbers -columns [list [db_value 1 -type integer] \
+        [db_value 1.25 -type decimal] [db_value 2.5 -type double]]]
+    dict get [db_compile $s -dialect postgresql] sql
+} -result {SELECT CAST(:p1 AS BIGINT), CAST(:p2 AS NUMERIC), CAST(:p3 AS DOUBLE PRECISION) FROM "numbers"}
+
+foreach {value scale} {
+    .25 2 1.25e2 0 1.25e-2 4 -0001.250 3 +.5 1 0.0001 4
+    9007199254740993.25 2 1e64 0 1e-30 30
+} {
+    test compile-decimal-$value {MySQL preserves decimal text and derives scale without floating point} -body {
+        set s [db_select numbers -columns [list [db_value $value -type decimal]]]
+        set compiled [db_compile $s -dialect mysql]
+        list [dict get $compiled sql] [dict get $compiled params p1]
+    } -result [list "SELECT CAST(:p1 AS DECIMAL(65,$scale)) FROM `numbers`" $value]
+}
+
+foreach value {1e65 1e-31 1e999999999999 . 1e+ {1); DROP TABLE numbers} NaN} {
+    test compile-decimal-invalid-$value {MySQL rejects malformed or unrepresentable decimals} -body {
+        set s [db_select numbers -columns [list [db_value $value -type decimal]]]
+        catch {db_compile $s -dialect mysql} message opts
+        dict get $opts -errorcode
+    } -result {TPERSIST TYPE}
+}
+
+test compile-6.2 {repeated decimal parameters share a binding and each occurrence retains its cast} -body {
+    set x [db_param x -type decimal]
+    set s [db_select numbers -columns [list [db_add $x $x]]]
+    set missing [db_compile $s -dialect mysql]
+    set bound [db_compile $s -dialect mysql -params {x 1.25}]
+    set null [db_compile $s -dialect mysql -nulls x]
+    list [dict get $missing required] [dict get $bound sql] [dict get $bound params] \
+        [dict get $null params] [dict get $null required] [dict get $null sql]
+} -result {x {SELECT (CAST(:p1 AS DECIMAL(65,2)) + CAST(:p1 AS DECIMAL(65,2))) FROM `numbers`} {p1 1.25} {} {} {SELECT (CAST(:p1 AS DECIMAL(65,30)) + CAST(:p1 AS DECIMAL(65,30))) FROM `numbers`}}
+
 ::tcltest::cleanupTests

@@ -53,7 +53,7 @@ foreach {dialect quoted} {sqlite {"users"} postgresql {"users"} mysql {`users`}}
         set result [db_execute $db $s -params {age 21}]
         list $::fake::calls [dict get $result rows] $::fake::alive
     } -cleanup {db_disconnect $db} -result [list [list begin \
-        [list prepare "SELECT [expr {$dialect eq "mysql" ? "`name`" : "\"name\""}] FROM $quoted WHERE ([expr {$dialect eq "mysql" ? "`age`" : "\"age\""}] = :p1)"] \
+        [list prepare "SELECT [expr {$dialect eq "mysql" ? "`name`" : "\"name\""}] FROM $quoted WHERE ([expr {$dialect eq "mysql" ? "`age`" : "\"age\""}] = [expr {$dialect eq "postgresql" ? "CAST(:p1 AS BIGINT)" : ":p1"}])"] \
         {type p1 bigint} {execute {p1 21}}] {{name Alice}} 0]
 }
 
@@ -85,6 +85,14 @@ test adapter-1.4 {invalid compiler input never reaches TDBC} -setup {
     catch {db_execute $db [db_update users]}
     set ::fake::calls
 } -cleanup {db_disconnect $db} -result {}
+
+test adapter-1.5 {MySQL decimal parameters reach the driver as exact text} -setup {
+    set db [fakeConnect mysql]
+} -body {
+    # db_select numbers -columns [list [db_add [db_col big] [db_value .25 -type decimal]]]
+    db_execute $db [db_select numbers -expr {big + .25}]
+    set ::fake::calls
+} -cleanup {db_disconnect $db} -result {begin {prepare {SELECT (`big` + CAST(:p1 AS DECIMAL(65,2))) FROM `numbers`}} {type p1 varchar} {execute {p1 .25}}}
 
 rename fakeConnect {}
 namespace delete ::fake
