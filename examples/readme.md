@@ -18,8 +18,8 @@ TCLLIBPATH="$PWD/build" tclsh8.6 examples/01_crud.tcl
 |---|---|
 | [01_crud.tcl](01_crud.tcl) | Table metadata, inserts, reusable parameters, pagination, arithmetic updates, RETURNING, deletes |
 | [02_query_composition.tcl](02_query_composition.tcl) | Query branching, AND/OR, LIKE, IN, NULL predicates, three dialects, offline compilation |
-| [03_joins_and_schema.tcl](03_joins_and_schema.tcl) | Foreign keys, indexes, left joins, aliases, grouping, aggregates, HAVING, row iteration |
-| [04_transactions.tcl](04_transactions.tcl) | Atomic updates, nested scopes, error recovery, explicit savepoints |
+| [03_joins_and_schema.tcl](03_joins_and_schema.tcl) | TclOO queries, foreign keys, indexes, left joins, aliases, grouping, aggregates, HAVING, row iteration |
+| [04_transactions.tcl](04_transactions.tcl) | TclOO transactions, atomic updates, nested scopes, error recovery, explicit savepoints via a borrowed connection |
 | [05_types_and_nulls.tcl](05_types_and_nulls.tcl) | Wide integers, Unicode, byte arrays, exact text, NULL versus empty strings |
 | [06_optional_oo.tcl](06_optional_oo.tcl) | Separate TclOO package, query methods, forks, procedural interoperability, automatic cleanup |
 
