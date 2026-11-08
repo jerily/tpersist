@@ -1,6 +1,6 @@
 {
   "name": "tpersist",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "dependencies": {
     "tcl": ">=8.6.0 <10.0.0"
   },

@@ -13,7 +13,21 @@ else()
     set(TCL_STUB_NAMES tclstub8.6 tclstub86)
 endif()
 get_filename_component(TCL_INCLUDE_PARENT "${TCL_INCLUDE_PATH}" DIRECTORY)
-find_library(TCL_STUB_LIBRARY NAMES ${TCL_STUB_NAMES} HINTS ${TCL_LIBRARY_DIR} "${TCL_INCLUDE_PARENT}/lib")
+if(TCL_LIBRARY_DIR)
+    # An explicit installation must not fall back to a host Tcl library.
+    find_library(TCL_STUB_LIBRARY
+      NAMES ${TCL_STUB_NAMES} NAMES_PER_DIR
+      PATHS "${TCL_LIBRARY_DIR}"
+      PATH_SUFFIXES tcl${TCL_VERSION_MAJOR}.${TCL_VERSION_MINOR}
+      NO_DEFAULT_PATH
+    )
+else()
+    find_library(TCL_STUB_LIBRARY
+      NAMES ${TCL_STUB_NAMES} NAMES_PER_DIR
+      HINTS "${TCL_INCLUDE_PARENT}/lib"
+      PATH_SUFFIXES tcl${TCL_VERSION_MAJOR}.${TCL_VERSION_MINOR}
+    )
+endif()
 find_program(TCL_TCLSH NAMES tclsh${TCL_VERSION_MAJOR}.${TCL_VERSION_MINOR} tclsh${TCL_VERSION_MAJOR}${TCL_VERSION_MINOR}t NAMES_PER_DIR HINTS "${TCL_INCLUDE_PARENT}/bin")
 include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(TclStub REQUIRED_VARS TCL_INCLUDE_PATH TCL_STUB_LIBRARY TCL_TCLSH VERSION_VAR TCL_VERSION)
