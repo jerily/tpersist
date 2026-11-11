@@ -36,3 +36,7 @@ No JSON dependency is required.
 
 MIT licensed. This is an initial implementation of a Core-style SQL toolkit;
 it does not implement SQLAlchemy's ORM.
+
+`::tpersist::db_dialect $connection` returns `sqlite`, `postgresql`, or `mysql`
+for an open connection; an unknown or closed handle raises `TPERSIST CONNECTION`.
+Adapters use this to validate a borrowed connection.

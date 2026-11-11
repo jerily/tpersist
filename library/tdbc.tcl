@@ -88,6 +88,11 @@ proc ::tpersist::db_disconnect {handle} {
     return
 }
 
+# Let adapters validate a borrowed connection without accessing driver internals.
+proc ::tpersist::db_dialect {handle} {
+    return [dict get [_connection $handle] dialect]
+}
+
 # Always supply a dictionary: TDBC must never look up bind variables in a
 # caller's scope. Statements and result sets remain owned by this adapter.
 proc ::tpersist::_raw {handle sql} {
