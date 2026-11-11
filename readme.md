@@ -40,3 +40,9 @@ it does not implement SQLAlchemy's ORM.
 `::tpersist::db_dialect $connection` returns `sqlite`, `postgresql`, or `mysql`
 for an open connection; an unknown or closed handle raises `TPERSIST CONNECTION`.
 Adapters use this to validate a borrowed connection.
+
+`db_create_index connection name table columns -descending {column ...}` marks
+selected index columns as descending; all remaining columns stay ascending.
+For example, `{domain published_at path} -descending published_at` supports
+`ORDER BY published_at DESC, path ASC` within a domain. Descending columns must
+belong to the index and remain quoted identifiers, not SQL fragments.

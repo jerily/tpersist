@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(tpersist VERSION 0.1.2 LANGUAGES C)
+project(tpersist VERSION 0.1.3 LANGUAGES C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 option(BUILD_SHARED_LIBS "Build a loadable Tcl extension" ON)
