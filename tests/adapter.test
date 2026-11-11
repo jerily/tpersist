@@ -94,6 +94,16 @@ test adapter-1.5 {MySQL decimal parameters reach the driver as exact text} -setu
     set ::fake::calls
 } -cleanup {db_disconnect $db} -result {begin {prepare {SELECT (`big` + CAST(:p1 AS DECIMAL(65,2))) FROM `numbers`}} {type p1 varchar} {execute {p1 .25}}}
 
+foreach dialect {sqlite postgresql mysql} {
+    test adapter-dialect-$dialect {public dialect access validates the connection lifetime} -setup {
+        set db [fakeConnect $dialect]
+    } -body {
+        set actual [db_dialect $db]
+        db_disconnect $db
+        list $actual [catch {db_dialect $db} message options] [dict get $options -errorcode]
+    } -result [list $dialect 1 {TPERSIST CONNECTION}]
+}
+
 rename fakeConnect {}
 namespace delete ::fake
 ::tcltest::cleanupTests
