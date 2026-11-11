@@ -104,6 +104,37 @@ foreach dialect {sqlite postgresql mysql} {
     } -result [list $dialect 1 {TPERSIST CONNECTION}]
 }
 
+foreach {dialect expected} {
+    sqlite {CREATE INDEX "posts_date" ON "posts" ("domain", "published_at" DESC, "path")}
+    postgresql {CREATE INDEX "posts_date" ON "posts" ("domain", "published_at" DESC, "path")}
+    mysql {CREATE INDEX `posts_date` ON `posts` (`domain`, `published_at` DESC, `path`)}
+} {
+    test adapter-index-order-$dialect {descending index columns preserve ascending tie-break columns} -setup {
+        set db [fakeConnect $dialect]
+    } -body {
+        db_create_index $db posts_date posts {domain published_at path} -descending published_at
+        lindex $::fake::calls 0 1
+    } -cleanup {db_disconnect $db} -result $expected
+}
+
+test adapter-index-validation {invalid descending columns fail before executing DDL} -setup {
+    set db [fakeConnect sqlite]
+} -body {
+    set result {}
+    foreach descending {{missing} {created_at created_at} {created_at; DROP TABLE users}} {
+        lappend result [catch {db_create_index $db recent users {tenant created_at id} -descending $descending}]
+    }
+    lappend result $::fake::calls
+    set result
+} -cleanup {db_disconnect $db} -result {1 1 1 {}}
+
+test adapter-index-quoting {quoted index columns remain identifiers when descending} -setup {
+    set db [fakeConnect sqlite]
+} -body {
+    db_create_index $db ix users [list {created "at} id] -descending [list {created "at}]
+    lindex $::fake::calls 0 1
+} -cleanup {db_disconnect $db} -result {CREATE INDEX "ix" ON "users" ("created ""at" DESC, "id")}
+
 rename fakeConnect {}
 namespace delete ::fake
 ::tcltest::cleanupTests

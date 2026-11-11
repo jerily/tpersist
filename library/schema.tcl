@@ -278,14 +278,27 @@ proc ::tpersist::db_drop_table {handle table args} {
 
 proc ::tpersist::db_create_index {handle name table columns args} {
     if {[llength $args] % 2} { _fail ARGS "index options must be name/value pairs" }
-    set flags {unique 0 if_not_exists 0}
+    set flags {unique 0 if_not_exists 0 descending {}}
     foreach {key value} $args {
-        if {$key ni {-unique -if_not_exists}} { _fail ARGS "unknown index option: $key" }
+        if {$key ni {-unique -if_not_exists -descending}} { _fail ARGS "unknown index option: $key" }
         dict set flags [string range $key 1 end] $value
     }
     set unique [_flag $flags unique]
     set exists [_flag $flags if_not_exists]
     set dialect [dict get [_connection $handle] dialect]
+    # Quote identifiers separately from directions; never accept SQL fragments.
+    _columnList $columns {} $dialect
+    set descending [dict get $flags descending]
+    if {[llength $descending]} { _columnList $descending {} $dialect }
+    foreach column $descending {
+        if {$column ni $columns} { _fail VALIDATION "descending column is not in the index: $column" }
+    }
+    set indexed {}
+    foreach column $columns {
+        set part [_quote $column $dialect]
+        if {$column in $descending} { append part { DESC} }
+        lappend indexed $part
+    }
     if {$exists && $dialect eq "mysql"} { _fail UNSUPPORTED "MySQL CREATE INDEX does not support IF NOT EXISTS" }
     set indexName [_quote $name $dialect]
     set parts [_tableParts $table]
@@ -297,7 +310,7 @@ proc ::tpersist::db_create_index {handle name table columns args} {
     if {$unique} { append sql {UNIQUE } }
     append sql {INDEX }
     if {$exists} { append sql {IF NOT EXISTS } }
-    append sql "$indexName ON [_tableName $parts $dialect] ([_columnList $columns {} $dialect])"
+    append sql "$indexName ON [_tableName $parts $dialect] ([join $indexed {, }])"
     _ddl $handle $sql
 }
 
