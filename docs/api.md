@@ -365,3 +365,13 @@ connection pool, raw SQL API, CTEs, window functions, subqueries, upserts, or
 table aliases on write statements. RETURNING requires SQLite 3.35+ or PostgreSQL
 and is rejected for MySQL. Backend capabilities and type semantics remain those
 of the actual database and installed TDBC driver.
+
+## JSONL export/import
+
+`db_tables connection ?-schema name?` discovers application tables.
+`db_export_jsonl connection path ?-tables names? ?-schema name? ?-gzip boolean?`
+exports schemas and rows. `db_import_jsonl` accepts the same arguments, creates
+missing tables from the archived JSON schemas, and restores into empty tables.
+Both return row counts and also accept `-deadline` and `-max_bytes`.
+See [JSONL backups](jsonl.md) for the format, transaction guarantees and supported
+SQLite/PostgreSQL schema features.
