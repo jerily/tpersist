@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "tables": [
+    {
+      "name": "teams",
+      "columns": {
+        "id": {"type": "bigint", "primary_key": true},
+        "name": {"type": "varchar", "length": 80, "default": "O'Brien"},
+        "active": {"type": "boolean", "not_null": true, "default": true},
+        "amount": {"type": "decimal", "precision": 20, "scale": 3, "default": "0.125"},
+        "note": {"type": "text", "default": null}
+      }
+    }
+  ]
+}

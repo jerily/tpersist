@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "tables": [
+    {
+      "name": "😀",
+      "columns": {
+        "café": {
+          "type": "text"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "tables": [
+    {
+      "name": "teams",
+      "columns": {
+        "id": {
+          "type": "integer",
+          "primary_key": true
+        },
+        "valid_first": {
+          "type": "text"
+        },
+        "added": {
+          "type": "text"
+        }
+      },
+      "unique": [
+        [
+          "added"
+        ]
+      ]
+    }
+  ]
+}

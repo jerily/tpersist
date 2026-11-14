@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "tables": [
+    {
+      "name": "t",
+      "columns": {
+        "id": {
+          "type": "integer",
+          "default": "1;DROP TABLE t"
+        }
+      }
+    }
+  ]
+}

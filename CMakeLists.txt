@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(tpersist VERSION 0.1.3 LANGUAGES C)
+project(tpersist VERSION 0.1.4 LANGUAGES C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 option(BUILD_SHARED_LIBS "Build a loadable Tcl extension" ON)
@@ -10,7 +10,7 @@ find_package(TclStub 8.6 REQUIRED)
 # Embed the Tcl adapter so static builds and relocated installs need no source
 # tree or external script path. No database client libraries are linked here.
 set(TPERSIST_SCRIPT "")
-foreach(script library/tdbc.tcl library/schema.tcl)
+foreach(script library/tdbc.tcl library/schema.tcl library/schema_json.tcl)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${script}")
     file(READ "${CMAKE_CURRENT_SOURCE_DIR}/${script}" part HEX)
     string(APPEND TPERSIST_SCRIPT "${part}0a")

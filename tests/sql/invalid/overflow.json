@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "tables": [
+    {
+      "name": "t",
+      "columns": {
+        "id": {
+          "type": "bigint",
+          "default": "9223372036854775808"
+        }
+      }
+    }
+  ]
+}

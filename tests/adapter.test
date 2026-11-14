@@ -1,3 +1,7 @@
+# Copyright Jerily LTD. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026 Neofytos Dimitriou (neo@jerily.cy)
+# SPDX-License-Identifier: MIT.
+
 # Exercise the TDBC protocol without requiring remote database services.
 package require tcltest 2
 package require tpersist
@@ -34,12 +38,14 @@ oo::class create ::fake::Result {
     destructor { incr ::fake::alive -1 }
     method columns {} { return name }
     method rowcount {} { return 1 }
-    method allrows {args} { return {{name Alice}} }
+    method allrows {args} { return $::fake::rows }
     method close {} { my destroy }
 }
+# Register a test double for the selected database dialect.
 proc fakeConnect {dialect} {
     set ::fake::calls {}
     set ::fake::fail 0
+    set ::fake::rows {{name Alice}}
     dict set ::tpersist::connections fake [dict create command [::fake::Connection new] \
         dialect $dialect autobegin 1 transaction 0 savepoints {}]
     return fake
@@ -134,6 +140,107 @@ test adapter-index-quoting {quoted index columns remain identifiers when descend
     db_create_index $db ix users [list {created "at} id] -descending [list {created "at}]
     lindex $::fake::calls 0 1
 } -cleanup {db_disconnect $db} -result {CREATE INDEX "ix" ON "users" ("created ""at" DESC, "id")}
+
+foreach dialect {sqlite postgresql mysql} {
+    foreach exists {0 1} {
+        test adapter-json-schema-$dialect-$exists {apply uses native guards or MySQL catalog checks without autobegin} -setup {
+            set db [fakeConnect $dialect]
+            set ::fake::rows [expr {$exists ? {{present 1}} : {}}]
+            set filename [file join [file dirname [info script]] sql adapter.json]
+        } -body {
+            db_apply_schema $db $filename
+            set sqls {}
+            foreach call $::fake::calls {
+                if {[lindex $call 0] eq "prepare"} { lappend sqls [lindex $call 1] }
+            }
+            set creates [lsearch -all -inline -glob $sqls {CREATE*INDEX*}]
+            list [string match {CREATE TABLE IF NOT EXISTS *} [lindex $sqls 0]] \
+                [llength $creates] [expr {"begin" in $::fake::calls}] $::fake::alive
+        } -cleanup {
+            db_disconnect $db
+        } -result [list 1 [expr {$dialect eq "mysql" && $exists ? 0 : 1}] 0 0]
+    }
+}
+
+test adapter-json-mysql-qualified {MySQL catalog checks bind schema, table, and index names as data} -setup {
+    set db [fakeConnect mysql]
+    set filename [file join [file dirname [info script]] sql adapter-qualified.json]
+} -body {
+    db_apply_schema $db $filename
+    list [lindex $::fake::calls 2] [lindex $::fake::calls 3]
+} -cleanup {
+    db_disconnect $db
+} -result [list \
+    {prepare {SELECT 1 AS present FROM information_schema.statistics WHERE table_schema = :schema_name AND table_name = :table_name AND index_name = :index_name LIMIT 1}} \
+    {execute {table_name users'-- index_name ix'-- schema_name app'--}}]
+
+test adapter-json-mysql-transaction {apply rejects MySQL DDL in an existing transaction before any statements} -setup {
+    set db [fakeConnect mysql]
+    db_begin $db
+    set ::fake::calls {}
+    set filename [file join [file dirname [info script]] sql adapter-transaction.json]
+} -body {
+    catch {db_apply_schema $db $filename} message opts
+    list [dict get $opts -errorcode] $::fake::calls
+} -cleanup {
+    db_disconnect $db
+} -result {{TPERSIST TRANSACTION} {}}
+
+foreach fixture {preflight-index preflight-mysql} {
+    test adapter-json-$fixture {late validation errors never reach TDBC} -setup {
+        set db [fakeConnect mysql]
+        set filename [file join [file dirname [info script]] sql $fixture.json]
+    } -body {
+        list [catch {db_apply_schema $db $filename}] $::fake::calls
+    } -cleanup {
+        db_disconnect $db
+    } -result {1 {}}
+}
+
+
+# Catalog inspection must preserve the connection's transaction state.
+foreach dialect {sqlite postgresql mysql} {
+    foreach exists {0 1} {
+        test adapter-json-columns-$dialect-$exists {column additions are planned only for existing tables without autobegin} -setup {
+            set db [fakeConnect $dialect]
+            set ::fake::rows [expr {$exists ? {{name id schema_name app}} : {}}]
+            set filename [file join [file dirname [info script]] sql add-columns.json]
+        } -body {
+            db_apply_schema $db $filename -additive true
+            set sqls {}
+            foreach call $::fake::calls {
+                if {[lindex $call 0] eq "prepare"} { lappend sqls [lindex $call 1] }
+            }
+            set alters [lsearch -all -inline -glob $sqls {ALTER TABLE*ADD COLUMN*}]
+            list [llength $alters] [expr {"begin" in $::fake::calls}] $::fake::alive
+        } -cleanup {db_disconnect $db} -result [list [expr {$exists ? 4 : 0}] 0 0]
+    }
+    test adapter-json-columns-qualified-$dialect {metadata names are bound and ALTER identifiers are separately quoted} -setup {
+        set db [fakeConnect $dialect]
+        set ::fake::rows [list [dict create name {x";DROP} schema_name extra]]
+        set filename [file join [file dirname [info script]] sql add-columns-qualified.json]
+    } -body {
+        db_apply_schema $db $filename -additive true
+        set sqls {}
+        foreach call $::fake::calls {
+            if {[lindex $call 0] eq "prepare"} { lappend sqls [lindex $call 1] }
+        }
+        list [lindex $::fake::calls 1] [lsearch -all -inline -glob $sqls {ALTER TABLE*}]
+    } -cleanup {db_disconnect $db} -result [list \
+        {execute {table_name {node table name other} schema_name extra}} \
+        [list [expr {$dialect eq "mysql" ? {ALTER TABLE `extra`.`node table name other` ADD COLUMN `new"column` TEXT DEFAULT 'safe''value'} : \
+            ($dialect eq "postgresql" ? {ALTER TABLE "extra"."node table name other" ADD COLUMN "new""column" TEXT DEFAULT E'safe''value'} : \
+            {ALTER TABLE "extra"."node table name other" ADD COLUMN "new""column" TEXT DEFAULT 'safe''value'})}]]]
+}
+
+test adapter-json-columns-catalog-error {metadata failures propagate before any DDL and release resources} -setup {
+    set db [fakeConnect mysql]
+    set ::fake::fail 1
+    set filename [file join [file dirname [info script]] sql add-columns.json]
+} -body {
+    catch {db_apply_schema $db $filename -additive true} message opts
+    list [dict get $opts -errorcode] [llength $::fake::calls] $::fake::alive
+} -cleanup {db_disconnect $db} -result {{TDBC GENERAL_ERROR HY000 FAKE 1} 2 0}
 
 rename fakeConnect {}
 namespace delete ::fake

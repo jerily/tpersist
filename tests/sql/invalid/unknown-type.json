@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "tables": [
+    {
+      "name": "t",
+      "columns": {
+        "id": {
+          "type": "money"
+        }
+      }
+    }
+  ]
+}

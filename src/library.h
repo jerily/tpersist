@@ -1,4 +1,8 @@
-/* SPDX-License-Identifier: MIT */
+/**
+ * Copyright Jerily LTD. All Rights Reserved.
+ * SPDX-FileCopyrightText: 2026 Neofytos Dimitriou (neo@jerily.cy)
+ * SPDX-License-Identifier: MIT.
+ */
 #ifndef TPERSIST_LIBRARY_H
 #define TPERSIST_LIBRARY_H
 #include <tcl.h>

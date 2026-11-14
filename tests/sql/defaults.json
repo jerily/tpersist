@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "tables": [
+    {
+      "name": "values",
+      "columns": {
+        "big": {
+          "type": "bigint",
+          "default": "9007199254740993"
+        },
+        "amount": {
+          "type": "decimal",
+          "precision": 30,
+          "scale": 12,
+          "default": "123456789012345.123456789012"
+        },
+        "exponent": {
+          "type": "double",
+          "default": 0.0125
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "empty": {
+          "type": "text",
+          "default": ""
+        },
+        "absent": {
+          "type": "text",
+          "default": null
+        },
+        "text": {
+          "type": "text",
+          "default": "[error boom] $value; \\ \" \n \t \b \f \r / é"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,227 @@
+# Copyright Jerily LTD. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026 Neofytos Dimitriou (neo@jerily.cy)
+# SPDX-License-Identifier: MIT.
+
+# Test JSON schema validation and repeatable application.
+package require tcltest 2
+package require tpersist
+namespace import ::tcltest::test
+namespace import ::tpersist::db_*
+
+namespace eval ::schemajson {
+    variable directory [file join [file dirname [info script]] sql]
+    # Resolve fixtures independently of the working directory.
+    proc path {name} { variable directory; return [file join $directory $name.json] }
+}
+
+test schema-json-read {UTF-8 file compiles to reusable table and index definitions} -setup {
+    set filename [::schemajson::path schema]
+} -body {
+    set doc [db_read_schema $filename]
+    set table [lindex [dict get $doc tables] 1]
+    set index [lindex [dict get $doc indexes] 0]
+    list [dict get $doc version] [db_schema_sql $table] [dict get $index descending] [dict get $index unique]
+} -result [list 1 \
+    {CREATE TABLE "members" ("team_id" INTEGER NOT NULL, "id" INTEGER NOT NULL, "name" VARCHAR(80) DEFAULT 'O''Brien', "active" BOOLEAN DEFAULT TRUE, "note" TEXT DEFAULT NULL, PRIMARY KEY ("team_id", "id"), UNIQUE ("team_id", "name"), FOREIGN KEY ("team_id") REFERENCES "teams" ("id") ON DELETE CASCADE)} id 1]
+
+test schema-json-defaults {exact numeric strings, false, NULL and empty strings remain distinct} -body {
+    set doc [db_read_schema [::schemajson::path defaults]]
+    set table [lindex [dict get $doc tables] 0]
+    set cols [dict get $table columns]
+    list [dict get $cols big default value] [dict get $cols amount default value] \
+        [dict get $cols exponent default value] [dict get $cols enabled default value] \
+        [dict get $cols empty default] [dict get $cols absent default] [dict get $cols text default value]
+} -result [list 9007199254740993 123456789012345.123456789012 0.0125 0 \
+    {node value value {} type text} {node null} "\[error boom\] \$value; \\ \" \n \t \b \f \r / é"]
+
+test schema-json-unicode {surrogate pairs decode to the same string as UTF-8 input} -body {
+    set escaped [db_read_schema [::schemajson::path unicode-escaped]]
+    set literal [db_read_schema [::schemajson::path unicode]]
+    expr {$escaped eq $literal}
+} -result 1
+
+foreach {label pattern} {
+    version {*unsupported*version*}
+    version-string {*version*number*}
+    no-version {*missing field schema.version*}
+    top-array {*schema*object*}
+    top-unknown {*unknown field schema.typo*}
+    tables-object {*tables*array*}
+    null-name {*name*string*}
+    empty-columns {*at least one column*}
+    array-columns {*columns*object*}
+    bool-number {*not_null*boolean*}
+    unknown-column-field {*unknown field*typo*}
+    unknown-type {*unsupported column type*}
+    fractional-length {*length*integer*}
+    string-length {*length*number*}
+    default-object {*requires a number*}
+    text-default-number {*default*string*}
+    bool-default-string {*default*boolean*}
+    overflow {*range*}
+    bad-default {*integer*}
+    duplicate-table {*duplicate table*}
+    missing-index-column {*unknown constraint column*}
+    duplicate-index-column {*duplicate column*}
+    bad-descending {*descending column*}
+    duplicate-index {*duplicate index*}
+    invalid-fk {*column list cannot be empty*}
+    unsafe-integer {*use a numeric string*}
+    numeric-decimal {*default*string*}
+    duplicate-field {*duplicate field*}
+} {
+    test schema-json-invalid-$label {bad schema is rejected} -body [list db_read_schema [::schemajson::path invalid/$label]] \
+        -returnCodes error -match glob -result $pattern
+}
+
+foreach fixture {malformed trailing} {
+    test schema-json-$fixture {tjson parsing failures retain a stable error category} -body {
+        catch {db_read_schema [::schemajson::path invalid/$fixture]} message opts
+        dict get $opts -errorcode
+    } -result {TPERSIST JSON}
+}
+
+::tcltest::testConstraint schemaSqlite [expr {![catch {package require tdbc::sqlite3}]}]
+
+test schema-json-apply {repeat application preserves data and creates missing indexes on existing tables} -constraints schemaSqlite -setup {
+    set db [db_connect -database :memory: -autobegin 0]
+    set filename [::schemajson::path schema]
+} -body {
+    db_apply_schema $db $filename
+    db_execute $db [db_values [db_insert teams] {id 1}]
+    db_execute $db [db_values [db_insert members] {team_id 1 id 2}]
+    ::tpersist::_raw $db {DROP INDEX members_name}
+    db_apply_schema $db $filename
+    db_apply_schema $db $filename
+    set row [lindex [dict get [db_execute $db [db_select members]] rows] 0]
+    set index [lindex [::tpersist::_raw $db {SELECT sql FROM sqlite_master WHERE name = 'members_name'}] 0]
+    set columns [::tpersist::_raw $db {PRAGMA index_xinfo(members_name)}]
+    list [dict get $row name] [dict get $row active] [dict exists $row note] [dict get $index sql] \
+        [dict get [lindex $columns 0] desc] [dict get [lindex $columns 1] desc]
+} -cleanup {
+    db_disconnect $db
+} -result [list {O'Brien} 1 0 {CREATE UNIQUE INDEX "members_name" ON "members" ("name", "id" DESC)} 0 1]
+
+test schema-json-additive {an updated file can add both a table and an index} -constraints schemaSqlite -setup {
+    set db [db_connect -database :memory: -autobegin 0]
+    set filename [::schemajson::path initial]
+} -body {
+    db_apply_schema $db $filename
+    db_execute $db [db_values [db_insert teams] {id 1}]
+    set filename [::schemajson::path schema]
+    db_apply_schema $db $filename
+    list [dict get [db_execute $db [db_select teams]] rows] \
+        [::tpersist::_raw $db {SELECT name FROM sqlite_master WHERE name IN ('members', 'members_name') ORDER BY name}]
+} -cleanup {
+    db_disconnect $db
+} -result {{{id 1}} {{name members} {name members_name}}}
+
+test schema-json-preflight {a late dialect error leaves the database untouched} -constraints schemaSqlite -setup {
+    set db [db_connect -database :memory: -autobegin 0]
+    set filename [::schemajson::path preflight-sqlite]
+} -body {
+    catch {db_apply_schema $db $filename} message opts
+    list [dict get $opts -errorcode] [::tpersist::_raw $db {SELECT name FROM sqlite_master}]
+} -cleanup {
+    db_disconnect $db
+} -result {{TPERSIST UNSUPPORTED} {}}
+
+test schema-json-qualified {attached SQLite schemas and hostile identifiers remain separate identifiers} -constraints schemaSqlite -setup {
+    set db [db_connect -database :memory: -autobegin 0]
+    ::tpersist::_raw $db {ATTACH DATABASE ':memory:' AS extra}
+    set filename [::schemajson::path qualified]
+} -body {
+    db_apply_schema $db $filename
+    db_apply_schema $db $filename
+    ::tpersist::_raw $db {SELECT name FROM extra.sqlite_master ORDER BY type}
+} -cleanup {
+    db_disconnect $db
+} -result {{name {ix";DROP}} {name {node table name other}}}
+
+test schema-json-transaction {caller controls transactional DDL rollback} -constraints schemaSqlite -setup {
+    set db [db_connect -database :memory:]
+    set filename [::schemajson::path schema]
+} -body {
+    catch {db_transaction $db {db_apply_schema $db $filename; error abort}}
+    ::tpersist::_raw $db {SELECT name FROM sqlite_master}
+} -cleanup {
+    db_disconnect $db
+} -result {}
+
+
+# Exercise the opt-in path against existing rows and freshly created tables.
+foreach {label options expected} {default {} 1 disabled {-additive false} 1 enabled {-additive true} 5} {
+    test schema-json-columns-$label {missing columns are added only when requested} -constraints schemaSqlite -setup {
+        set db [db_connect -database :memory: -autobegin 0]
+        db_apply_schema $db [::schemajson::path initial]
+        db_execute $db [db_values [db_insert teams] {id 7}]
+    } -body {
+        db_apply_schema $db [::schemajson::path add-columns] {*}$options
+        set columns [::tpersist::_raw $db {PRAGMA main.table_info(teams)}]
+        list [llength $columns] [dict get [lindex $columns 0] type] \
+            [dict get [db_execute $db [db_select teams -columns id]] rows]
+    } -cleanup {db_disconnect $db} -result [list $expected INTEGER {{id 7}}]
+}
+
+test schema-json-column-defaults {additions preserve data, populate defaults and precede index creation} -constraints schemaSqlite -setup {
+    set db [db_connect -database :memory: -autobegin 0]
+    db_apply_schema $db [::schemajson::path initial]
+    db_execute $db [db_values [db_insert teams] {id 7}]
+} -body {
+    db_apply_schema $db [::schemajson::path add-columns-indexed] -additive true
+    db_apply_schema $db [::schemajson::path add-columns-indexed] -additive true
+    set row [lindex [dict get [db_execute $db [db_select teams]] rows] 0]
+    list [dict get $row id] [dict get $row name] [dict get $row active] [dict get $row amount] \
+        [dict exists $row note] [::tpersist::_raw $db {SELECT name FROM sqlite_master WHERE name = 'teams_name'}]
+} -cleanup {db_disconnect $db} -result {7 O'Brien 1 0.125 0 {{name teams_name}}}
+
+test schema-json-columns-new-table {new tables retain their full constraints with additive mode enabled} -constraints schemaSqlite -setup {
+    set db [db_connect -database :memory: -autobegin 0]
+} -body {
+    db_apply_schema $db [::schemajson::path schema] -additive true
+    db_apply_schema $db [::schemajson::path schema] -additive true
+    llength [::tpersist::_raw $db {PRAGMA main.table_info(members)}]
+} -cleanup {db_disconnect $db} -result 5
+
+foreach fixture {not-null null-default unique primary-key table-unique foreign-key} {
+    test schema-json-column-reject-$fixture {unsupported additions fail before any DDL} -constraints schemaSqlite -setup {
+        set db [db_connect -database :memory: -autobegin 0]
+        db_apply_schema $db [::schemajson::path initial]
+    } -body {
+        catch {db_apply_schema $db [::schemajson::path add-column-$fixture] -additive true} message opts
+        list [dict get $opts -errorcode] [llength [::tpersist::_raw $db {PRAGMA main.table_info(teams)}]]
+    } -cleanup {db_disconnect $db} -result {{TPERSIST UNSUPPORTED} 1}
+}
+
+test schema-json-columns-qualified {additions target the specified schema and quote names} -constraints schemaSqlite -setup {
+    set db [db_connect -database :memory: -autobegin 0]
+    ::tpersist::_raw $db {ATTACH DATABASE ':memory:' AS extra}
+    db_apply_schema $db [::schemajson::path qualified]
+} -body {
+    db_apply_schema $db [::schemajson::path add-columns-qualified] -additive true
+    db_apply_schema $db [::schemajson::path add-columns-qualified] -additive true
+    list [llength [::tpersist::_raw $db {PRAGMA extra.table_info('node table name other')}]] \
+        [::tpersist::_raw $db {SELECT name FROM main.sqlite_master}]
+} -cleanup {db_disconnect $db} -result {2 {}}
+
+test schema-json-columns-rollback {caller transactions roll back added columns and indexes} -constraints schemaSqlite -setup {
+    set db [db_connect -database :memory: -autobegin 0]
+    db_apply_schema $db [::schemajson::path initial]
+} -body {
+    catch {db_transaction $db {
+        db_apply_schema $db [::schemajson::path add-columns-indexed] -additive true
+        error abort
+    }}
+    list [llength [::tpersist::_raw $db {PRAGMA main.table_info(teams)}]] \
+        [::tpersist::_raw $db {SELECT name FROM sqlite_master WHERE name = 'teams_name'}]
+} -cleanup {db_disconnect $db} -result {1 {}}
+
+foreach options {{-additive} {-additive maybe} {-unknown true} {-additive true extra}} {
+    test schema-json-option-[incr schemaOption] {invalid options fail before opening the file or touching a connection} -body {
+        catch {db_apply_schema absent absent.json {*}$options} message opts
+        dict get $opts -errorcode
+    } -result {TPERSIST ARGS}
+}
+
+namespace delete ::schemajson
+::tcltest::cleanupTests

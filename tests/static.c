@@ -1,3 +1,8 @@
+/**
+ * Copyright Jerily LTD. All Rights Reserved.
+ * SPDX-FileCopyrightText: 2026 Neofytos Dimitriou (neo@jerily.cy)
+ * SPDX-License-Identifier: MIT.
+ */
 #include <tcl.h>
 #include "library.h"
 #include <stdio.h>

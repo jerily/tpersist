@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "tables": [
+    {
+      "name": "node table name other",
+      "schema": "extra",
+      "columns": {
+        "x\";DROP": {
+          "type": "text"
+        }
+      },
+      "indexes": [
+        {
+          "name": "ix\";DROP",
+          "columns": [
+            "x\";DROP"
+          ]
+        }
+      ]
+    }
+  ]
+}

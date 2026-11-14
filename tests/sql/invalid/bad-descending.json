@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "tables": [
+    {
+      "name": "t",
+      "columns": {
+        "id": {
+          "type": "integer"
+        }
+      },
+      "indexes": [
+        {
+          "name": "ix",
+          "columns": [
+            "id"
+          ],
+          "descending": [
+            "absent"
+          ]
+        }
+      ]
+    }
+  ]
+}

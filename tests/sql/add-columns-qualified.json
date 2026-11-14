@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "tables": [{
+    "name": "node table name other", "schema": "extra",
+    "columns": {"x\";DROP": {"type": "text"}, "new\"column": {"type": "text", "default": "safe'value"}},
+    "indexes": [{"name": "new\"index", "columns": ["new\"column"]}]
+  }]
+}

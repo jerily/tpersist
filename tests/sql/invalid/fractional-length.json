@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "tables": [
+    {
+      "name": "t",
+      "columns": {
+        "id": {
+          "type": "varchar",
+          "length": 1.5
+        }
+      }
+    }
+  ]
+}
