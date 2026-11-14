@@ -110,6 +110,8 @@ gets it through the linker flags.
 | `library/tdbc.tcl` | Connections, execution, row loops, transactions |
 | `library/schema.tcl` | Table metadata, DDL compilation, schema commands |
 | `library/schema_json.tcl` | JSON schema validation and additive application via tjson |
+| `library/catalog.tcl` | Application table discovery and live portable schema snapshots |
+| `library/jsonl.tcl` | Streaming JSONL schema/data export and transactional import |
 | `library/oo.tcl` | Separate optional TclOO convenience package |
 | `tests/` | Compiler, schema, protocol, SQLite and optional server integration tests |
 | `examples/` | Runnable usage examples |

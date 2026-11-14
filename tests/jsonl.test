@@ -1,0 +1,253 @@
+# Copyright Jerily LTD. All Rights Reserved.
+# SPDX-License-Identifier: MIT.
+package require tcltest 2
+package require tpersist
+namespace import ::tcltest::test
+namespace import ::tpersist::db_*
+::tcltest::testConstraint jsonlSqlite [expr {![catch {package require tdbc::sqlite3}]}]
+::tcltest::testConstraint jsonlPostgres [info exists ::env(TPERSIST_TEST_POSTGRESQL)]
+
+proc jsonlSetup {dialect} {
+    set options {-database :memory:}
+    if {$dialect eq "postgresql"} {set options $::env(TPERSIST_TEST_POSTGRESQL)}
+    set source [db_connect -dialect $dialect -autobegin false {*}$options]
+    set target [db_connect -dialect $dialect -autobegin false {*}$options]
+    if {$dialect eq "postgresql"} {
+        foreach {db suffix} [list $source source $target target] {
+            set schema jsonl_[pid]_$suffix
+            ::tpersist::_raw $db "CREATE SCHEMA $schema"
+            ::tpersist::_raw $db "SET search_path TO $schema"
+        }
+    }
+    db_create_table $source [db_define_table {z parent} {
+        id {type integer primary_key 1 auto_increment 1}
+        label {type text not_null 1}
+        big {type bigint}
+        payload {type binary}
+        missing {type text}
+        amount {type decimal precision 20 scale 4 default {node value type decimal value 0.1250}}
+    } -unique {{label big}}]
+    db_create_index $source {label index} {z parent} {label big} -descending big
+    db_create_table $source [db_define_table child {parent {type integer} label {type text}} -foreign_keys {{columns parent table {z parent} referenced_columns id on_delete cascade}}]
+    db_create_table $source [db_define_table empty {value {type text}}]
+    set label "quotes \" newline\nλ 日本語"
+    # Older Tcl 8.6 PostgreSQL drivers send surrogate UTF-8 to libpq and reject
+    # supplementary characters before export. Keep that coverage on SQLite and
+    # Tcl 9, while exercising BMP Unicode with every driver used by CI.
+    if {$dialect ne "postgresql" || [package vcompare [package provide Tcl] 9] >= 0} {
+        append label " 😀"
+    }
+    db_execute $source [db_values [db_insert {z parent}] [dict create \
+        id [db_value 42 -type integer] label [db_value $label] \
+        big [db_value 9007199254740993 -type bigint] payload [db_value [binary decode hex 00ff014100] -type binary] \
+        missing [db_null]] -expressions]
+    db_execute $source [db_values [db_insert {z parent}] [dict create \
+        id [db_value 43 -type integer] label [db_value empty] payload [db_value {} -type binary] missing [db_value {}]] -expressions]
+    for {set i 0} {$i < 600} {incr i} {db_execute $source [db_values [db_insert child] {parent 42 label duplicate}]}
+    return [list $source $target]
+}
+proc jsonlCleanup {source target dialect} {
+    foreach {db suffix} [list $source source $target target] {
+        catch {db_rollback $db}
+        if {$dialect eq "postgresql"} {::tpersist::_raw $db "DROP SCHEMA jsonl_[pid]_$suffix CASCADE"}
+        db_disconnect $db
+    }
+    foreach file {jsonl-backup.jsonl jsonl-backup.jsonl.gz jsonl-bad.jsonl jsonl-bad.jsonl.gz} {::tcltest::removeFile $file}
+}
+proc jsonlRead {path} {
+    set ch [open $path rb]
+    try {set bytes [read $ch]} finally {close $ch}
+    if {[string match *.gz $path]} {set bytes [zlib gunzip $bytes]}
+    return [encoding convertfrom utf-8 $bytes]
+}
+proc jsonlWrite {path text} {
+    set ch [open $path wb]
+    try {
+        set bytes [encoding convertto utf-8 $text]
+        if {[string match *.gz $path]} {set bytes [zlib gzip $bytes]}
+        puts -nonewline $ch $bytes
+    } finally {close $ch}
+}
+
+foreach {dialect constraint} {sqlite jsonlSqlite postgresql jsonlPostgres} {
+    test jsonl-roundtrip-$dialect {Live schemas, indexes, FK order, nulls, exact integers, Unicode, blobs and cursor pages restore to an unprovisioned database} -constraints $constraint -setup {
+        lassign [jsonlSetup $dialect] source target
+        set path [file join $::tcltest::temporaryDirectory jsonl-backup.jsonl.gz]
+    } -body {
+        set exported [db_export_jsonl $source $path]
+        set imported [db_import_jsonl $target $path]
+        set matches {}
+        foreach name [db_tables $source] {
+            lappend matches [expr {[lsort [dict get [db_execute $source [db_select $name]] rows]] eq [lsort [dict get [db_execute $target [db_select $name]] rows]]}]
+        }
+        set before [dict get [db_execute $target [db_select {z parent}]] rows]
+        db_execute $target [db_values [db_insert {z parent}] {label next}]
+        set last [lindex [dict get [db_execute $target [db_order_by [db_select {z parent}] -expr {id DESC}]] rows] 0]
+        # Foreign key and unique constraints, and the descending index survive.
+        set fk [catch {db_execute $target [db_values [db_insert child] {parent 999 label invalid}]}]
+        set schema [::tjson::json_to_simple [lindex [split [jsonlRead $path] \n] 0]]
+        list [expr {$exported eq $imported}] [lsort -unique $matches] [dict get $imported child] \
+            [dict get $last id] $fk [llength [dict get $schema schema tables]] \
+            [dict exists [lindex $before 0] missing] [dict get [lindex $before 1] missing]
+    } -cleanup {jsonlCleanup $source $target $dialect} -result {1 1 600 44 1 3 0 {}}
+
+    test jsonl-select-$dialect {Export/import table selections leave unrelated data alone and do not implicitly add parents} -constraints $constraint -setup {
+        lassign [jsonlSetup $dialect] source target
+        set path [file join $::tcltest::temporaryDirectory jsonl-backup.jsonl]
+    } -body {
+        db_export_jsonl $source $path -tables [list empty {z parent}]
+        set a [db_import_jsonl $target $path -tables empty]
+        set b [db_import_jsonl $target $path -tables [list {z parent}]]
+        list $a $b [db_tables $target] [catch {db_export_jsonl $source $path -tables unknown}] \
+            [catch {db_import_jsonl $target $path -tables [list {z parent}]}]
+    } -cleanup {jsonlCleanup $source $target $dialect} -result {{empty 0} {{z parent} 2} {empty {z parent}} 1 1}
+
+    test jsonl-invalid-$dialect {Truncation, counts, extra records and duplicate fields roll back rows and newly created schemas} -constraints $constraint -setup {
+        lassign [jsonlSetup $dialect] source target
+        set path [file join $::tcltest::temporaryDirectory jsonl-backup.jsonl]
+        set bad [file join $::tcltest::temporaryDirectory jsonl-bad.jsonl]
+    } -body {
+        db_export_jsonl $source $path
+        set text [jsonlRead $path]
+        set lines [split [string trimright $text \n] \n]
+        set results {}
+        foreach broken [list \
+            "[join [lrange $lines 0 end-1] \n]\n" \
+            [string map {\"child\":600 \"child\":599} $text] \
+            "$text{}\n" \
+            [string map {\"format\":\"tpersist\" \"format\":\"tpersist\",\"format\":\"tpersist\"} $text]] {
+            jsonlWrite $bad $broken
+            lappend results [catch {db_import_jsonl $target $bad}] [db_tables $target]
+        }
+        set results
+    } -cleanup {jsonlCleanup $source $target $dialect} -result {1 {} 1 {} 1 {} 1 {}}
+
+    test jsonl-atomic-$dialect {Failed exports preserve the previous file and never leave an active transaction} -constraints $constraint -setup {
+        lassign [jsonlSetup $dialect] source target
+        set path [file join $::tcltest::temporaryDirectory jsonl-backup.jsonl]
+    } -body {
+        jsonlWrite $path original
+        set a [catch {db_export_jsonl $source $path -deadline 0}]
+        set b [catch {db_export_jsonl $source $path -max_bytes 10}]
+        db_begin $source
+        set c [catch {db_export_jsonl $source $path}]
+        db_rollback $source
+        list $a $b $c [jsonlRead $path] [glob -nocomplain [file join $::tcltest::temporaryDirectory .tpersist-jsonl-*]]
+    } -cleanup {jsonlCleanup $source $target $dialect} -result {1 1 1 original {}}
+
+    test jsonl-gzip-$dialect {Corrupt gzip checksums roll back the entire import} -constraints $constraint -setup {
+        lassign [jsonlSetup $dialect] source target
+        set path [file join $::tcltest::temporaryDirectory jsonl-backup.jsonl.gz]
+    } -body {
+        db_export_jsonl $source $path
+        set ch [open $path rb]; set bytes [read $ch]; close $ch
+        set index [expr {[string length $bytes] - 8}]
+        binary scan [string index $bytes $index] cu value
+        set bytes [string replace $bytes $index $index [binary format cu [expr {$value ^ 255}]]]
+        set ch [open $path wb]; puts -nonewline $ch $bytes; close $ch
+        list [catch {db_import_jsonl $target $path}] [db_tables $target]
+    } -cleanup {jsonlCleanup $source $target $dialect} -result {1 {}}
+}
+
+test jsonl-catalog-sqlite {System tables, views, virtual and shadow tables are excluded} -constraints jsonlSqlite -setup {
+    set db [db_connect -database :memory: -autobegin false]
+} -body {
+    ::tpersist::_raw $db {CREATE TABLE app (id INTEGER PRIMARY KEY AUTOINCREMENT)}
+    ::tpersist::_raw $db {CREATE VIEW app_view AS SELECT * FROM app}
+    db_tables $db
+} -cleanup {db_disconnect $db} -result app
+
+test jsonl-unsupported-sqlite {Unrepresentable schema features fail instead of silently dropping constraints} -constraints jsonlSqlite -setup {
+    set db [db_connect -database :memory: -autobegin false]
+    set path [file join $::tcltest::temporaryDirectory jsonl-backup.jsonl]
+} -body {
+    ::tpersist::_raw $db {CREATE TABLE app (id INTEGER CHECK (id > 0))}
+    catch {db_export_jsonl $db $path} message options
+    list [dict get $options -errorcode] [file exists $path]
+} -cleanup {db_disconnect $db; ::tcltest::removeFile jsonl-backup.jsonl} -result {{TPERSIST UNSUPPORTED} 0}
+
+test jsonl-truncated-gzip-sqlite {A missing gzip trailer fails even when all JSONL records decompressed successfully} -constraints jsonlSqlite -setup {
+    lassign [jsonlSetup sqlite] source target
+    set path [file join $::tcltest::temporaryDirectory jsonl-backup.jsonl.gz]
+} -body {
+    db_export_jsonl $source $path
+    set ch [open $path rb]; set bytes [read $ch]; close $ch
+    set ch [open $path wb]; puts -nonewline $ch [string range $bytes 0 end-8]; close $ch
+    list [catch {db_import_jsonl $target $path}] [db_tables $target]
+} -cleanup {jsonlCleanup $source $target sqlite} -result {1 {}}
+
+test jsonl-null-text-sqlite {NULL defaults and embedded NUL text survive schema and data serialization} -constraints jsonlSqlite -setup {
+    set source [db_connect -database :memory: -autobegin false]
+    set target [db_connect -database :memory: -autobegin false]
+    set path [file join $::tcltest::temporaryDirectory jsonl-backup.jsonl]
+} -body {
+    db_create_table $source [db_define_table app {value {type text default {node null}}}]
+    db_execute $source [db_values [db_insert app] [dict create value "a\x00b"]]
+    db_export_jsonl $source $path
+    db_import_jsonl $target $path
+    set value [dict get [lindex [dict get [db_execute $target [db_select app]] rows] 0] value]
+    ::tpersist::_raw $target {INSERT INTO app DEFAULT VALUES}
+    list [binary encode hex $value] [dict exists [lindex [dict get [db_execute $target [db_select app]] rows] 1] value]
+} -cleanup {jsonlCleanup $source $target sqlite} -result {610062 0}
+
+test jsonl-existing-index-sqlite {A colliding index name cannot silently discard an archived index} -constraints jsonlSqlite -setup {
+    lassign [jsonlSetup sqlite] source target
+    set path [file join $::tcltest::temporaryDirectory jsonl-backup.jsonl]
+} -body {
+    db_create_table $target [db_define_table other {value {type text}}]
+    db_create_index $target {label index} other value
+    db_export_jsonl $source $path
+    list [catch {db_import_jsonl $target $path}] [db_tables $target]
+} -cleanup {jsonlCleanup $source $target sqlite} -result {1 other}
+
+test jsonl-existing-empty-sqlite {Matching existing empty tables can be restored with archived indexes} -constraints jsonlSqlite -setup {
+    lassign [jsonlSetup sqlite] source target
+    set path [file join $::tcltest::temporaryDirectory jsonl-backup.jsonl]
+} -body {
+    db_export_jsonl $source $path
+    db_import_jsonl $target $path
+    db_execute $target [db_delete child]
+    db_execute $target [db_delete {z parent}]
+    set counts [db_import_jsonl $target $path]
+    list [dict get $counts child] [dict get $counts {z parent}]
+} -cleanup {jsonlCleanup $source $target sqlite} -result {600 2}
+
+test jsonl-schema-selection-sqlite {Missing schemas and explicit system-table selections fail; an empty selection is valid} -constraints jsonlSqlite -setup {
+    lassign [jsonlSetup sqlite] source target
+    set path [file join $::tcltest::temporaryDirectory jsonl-backup.jsonl]
+} -body {
+    set bad [catch {db_tables $source -schema absent}]
+    set system [catch {db_export_jsonl $source $path -tables sqlite_sequence}]
+    set exported [db_export_jsonl $source $path -tables {}]
+    set imported [db_import_jsonl $target $path]
+    list $bad $system $exported $imported [db_tables $target]
+} -cleanup {jsonlCleanup $source $target sqlite} -result {1 1 {} {} {}}
+
+test jsonl-snapshot-postgresql {Concurrent committed writes cannot enter a later table in the export snapshot} -constraints jsonlPostgres -setup {
+    lassign [jsonlSetup postgresql] source target
+    set path [file join $::tcltest::temporaryDirectory jsonl-backup.jsonl]
+    set concurrent [db_connect -dialect postgresql -autobegin false {*}$::env(TPERSIST_TEST_POSTGRESQL)]
+    ::tpersist::_raw $concurrent "SET search_path TO jsonl_[pid]_source"
+    rename ::tpersist::_jsonlWrite ::tpersist::_jsonlWriteOriginal
+    set ::jsonlConcurrent $concurrent
+    set ::jsonlWrote 0
+    proc ::tpersist::_jsonlWrite {channel record} {
+        if {!$::jsonlWrote && [dict exists $record table]} {
+            set ::jsonlWrote 1
+            db_execute $::jsonlConcurrent [db_values [db_insert child] {parent 42 label concurrent}]
+        }
+        _jsonlWriteOriginal $channel $record
+    }
+} -body {
+    db_export_jsonl $source $path
+    list [dict get [db_import_jsonl $target $path] child] $::jsonlWrote
+} -cleanup {
+    rename ::tpersist::_jsonlWrite {}
+    rename ::tpersist::_jsonlWriteOriginal ::tpersist::_jsonlWrite
+    db_disconnect $concurrent
+    unset ::jsonlConcurrent ::jsonlWrote
+    jsonlCleanup $source $target postgresql
+} -result {600 1}
+
+foreach proc {jsonlSetup jsonlCleanup jsonlRead jsonlWrite} {rename $proc {}}
+::tcltest::cleanupTests
