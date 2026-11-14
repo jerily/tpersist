@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "tables": [
+    {
+      "name": "t",
+      "columns": {
+        "id": {
+          "type": "integer"
+        }
+      }
+    },
+    {
+      "name": "t",
+      "columns": {
+        "id": {
+          "type": "integer"
+        }
+      }
+    }
+  ]
+}

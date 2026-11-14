@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "tables": [
+    {
+      "name": "good",
+      "columns": {
+        "id": {
+          "type": "integer"
+        }
+      }
+    },
+    {
+      "name": "bad",
+      "columns": {
+        "id": {
+          "type": "integer"
+        }
+      },
+      "indexes": [
+        {
+          "name": "ix",
+          "columns": [
+            "missing"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,8 +1,9 @@
 {
   "name": "tpersist",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "dependencies": {
-    "tcl": ">=8.6.0 <10.0.0"
+    "tcl": ">=8.6.0 <10.0.0",
+    "tjson": "^1.0.27"
   },
   "build": {
     "default": [

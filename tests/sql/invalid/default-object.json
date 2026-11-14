@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "tables": [
+    {
+      "name": "t",
+      "columns": {
+        "id": {
+          "type": "integer",
+          "default": {
+            "sql": "1"
+          }
+        }
+      }
+    }
+  ]
+}

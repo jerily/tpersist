@@ -1,3 +1,8 @@
+# Copyright Jerily LTD. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026 Neofytos Dimitriou (neo@jerily.cy)
+# SPDX-License-Identifier: MIT.
+
+# Run the test suite against the selected build.
 package require tcltest 2
 set build [file normalize [lindex $argv 0]]
 set auto_path [linsert $auto_path 0 $build]
@@ -6,6 +11,7 @@ set auto_path [linsert $auto_path 0 $build]
 apply {{dir} {source [file join $dir pkgIndex.tcl]}} $build
 set argv [lrange $argv 1 end]
 package require tpersist
+package require tjson 1.0.27
 if {[info exists ::env(TPERSIST_REQUIRE_SQLITE)] && $::env(TPERSIST_REQUIRE_SQLITE)} {
     package require tdbc::sqlite3
 }

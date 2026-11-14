@@ -1,13 +1,19 @@
-# SPDX-License-Identifier: MIT
+# Copyright Jerily LTD. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026 Neofytos Dimitriou (neo@jerily.cy)
+# SPDX-License-Identifier: MIT.
+
+# Manage TDBC connections, execution, and transactions.
 namespace eval ::tpersist {
     variable connections {}
     variable serial 0
 }
 
+# Raise a categorized tpersist error.
 proc ::tpersist::_fail {code message} {
     return -code error -errorcode [list TPERSIST $code] $message
 }
 
+# Look up an open connection handle.
 proc ::tpersist::_connection {handle} {
     variable connections
     if {![dict exists $connections $handle]} {
@@ -16,6 +22,7 @@ proc ::tpersist::_connection {handle} {
     return [dict get $connections $handle]
 }
 
+# Validate the requested database dialect.
 proc ::tpersist::_dialect {dialect} {
     if {$dialect ni {sqlite postgresql mysql}} {
         _fail DIALECT "dialect must be sqlite, postgresql, or mysql"
@@ -23,6 +30,7 @@ proc ::tpersist::_dialect {dialect} {
     return $dialect
 }
 
+# Escape an SQL identifier for the selected dialect.
 proc ::tpersist::_quote {name dialect} {
     if {$name eq {} || [string first \x00 $name] >= 0} {
         _fail VALIDATION "identifiers must be nonempty and contain no NUL characters"
@@ -31,6 +39,7 @@ proc ::tpersist::_quote {name dialect} {
     return $q[string map [list $q $q$q] $name]$q
 }
 
+# Open and register a TDBC connection.
 proc ::tpersist::db_connect {args} {
     variable connections
     variable serial
@@ -80,6 +89,7 @@ proc ::tpersist::db_connect {args} {
     return $handle
 }
 
+# Close and unregister a connection.
 proc ::tpersist::db_disconnect {handle} {
     variable connections
     set c [_connection $handle]
@@ -95,15 +105,16 @@ proc ::tpersist::db_dialect {handle} {
 
 # Always supply a dictionary: TDBC must never look up bind variables in a
 # caller's scope. Statements and result sets remain owned by this adapter.
-proc ::tpersist::_raw {handle sql} {
+proc ::tpersist::_raw {handle sql {params {}}} {
     set db [dict get [_connection $handle] command]
     set statement [$db prepare $sql]
     try {
-        set rs [$statement execute {}]
+        set rs [$statement execute $params]
         try { return [$rs allrows -as dicts] } finally { $rs close }
     } finally { $statement close }
 }
 
+# Compile, bind, and execute a statement through TDBC.
 proc ::tpersist::_prepare {handle statement options} {
     set c [_connection $handle]
     if {[llength $options] % 2} { _fail ARGS "execution options must be name/value pairs" }
@@ -140,6 +151,7 @@ proc ::tpersist::_prepare {handle statement options} {
     }
 }
 
+# Collect rows and metadata, then release statement resources.
 proc ::tpersist::db_execute {handle statement args} {
     lassign [_prepare $handle $statement $args] command rs columns
     try {
@@ -151,6 +163,7 @@ proc ::tpersist::db_execute {handle statement args} {
     }
 }
 
+# Visit each row while preserving Tcl loop control.
 proc ::tpersist::db_foreach_row {handle varName statement args} {
     if {![llength $args]} { _fail ARGS "expected a row-processing script" }
     set script [lindex $args end]
@@ -178,6 +191,7 @@ proc ::tpersist::db_foreach_row {handle varName statement args} {
     return $count
 }
 
+# Start an explicit transaction.
 proc ::tpersist::db_begin {handle} {
     variable connections
     set c [_connection $handle]
@@ -187,6 +201,7 @@ proc ::tpersist::db_begin {handle} {
     return
 }
 
+# Commit the active transaction and clear its savepoints.
 proc ::tpersist::db_commit {handle} {
     variable connections
     set c [_connection $handle]
@@ -197,6 +212,7 @@ proc ::tpersist::db_commit {handle} {
     return
 }
 
+# Roll back the active transaction and clear its savepoints.
 proc ::tpersist::db_rollback {handle} {
     variable connections
     set c [_connection $handle]
@@ -207,6 +223,7 @@ proc ::tpersist::db_rollback {handle} {
     return
 }
 
+# Create a named savepoint in the active transaction.
 proc ::tpersist::db_savepoint {handle name} {
     variable connections
     set c [_connection $handle]
@@ -219,6 +236,7 @@ proc ::tpersist::db_savepoint {handle name} {
     return
 }
 
+# Require savepoints to be closed in reverse order.
 proc ::tpersist::_savepointTop {handle name} {
     set c [_connection $handle]
     set stack [dict get $c savepoints]
@@ -228,12 +246,14 @@ proc ::tpersist::_savepointTop {handle name} {
     return $c
 }
 
+# Undo changes made since the named savepoint.
 proc ::tpersist::db_rollback_to {handle name} {
     set c [_savepointTop $handle $name]
     _raw $handle "ROLLBACK TO SAVEPOINT [_quote $name [dict get $c dialect]]"
     return
 }
 
+# Release the most recent savepoint.
 proc ::tpersist::db_release {handle name} {
     variable connections
     set c [_savepointTop $handle $name]
@@ -242,6 +262,7 @@ proc ::tpersist::db_release {handle name} {
     return
 }
 
+# Commit successful scripts or roll back on errors.
 proc ::tpersist::db_transaction {handle script} {
     variable serial
     set nested [dict get [_connection $handle] transaction]

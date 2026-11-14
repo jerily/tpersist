@@ -26,6 +26,7 @@ jobs:
           --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -ptpersist_test"
           --health-interval 5s --health-timeout 5s --health-retries 30
     env:
+      TCLLIBPATH: ${{ github.workspace }}/build-tjson
       TPERSIST_REQUIRE_SQLITE: "1"
       TPERSIST_TEST_POSTGRESQL: "-host 127.0.0.1 -port 5432 -database tpersist_test -user postgres -password tpersist_test"
       TPERSIST_TEST_MYSQL: "-host 127.0.0.1 -port 3306 -database tpersist_test -user root -password tpersist_test"
@@ -35,6 +36,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake tcl8.6-dev tcl8.6-tdbc tcl8.6-tdbc-sqlite3 tcl8.6-tdbc-postgres tcl8.6-tdbc-mysql
+      - uses: actions/checkout@v4
+        with:
+          repository: jerily/tjson
+          ref: v1.0.27
+          path: build-tjson-source
+      - name: Build tjson
+        run: |
+          cmake -S build-tjson-source -B build-tjson -DTCL_INCLUDE_DIR=/usr/include/tcl8.6 -DTCL_TCLSH=/usr/bin/tclsh8.6
+          cmake --build build-tjson --parallel 2
       - name: Build and test shared extension
         run: |
           cmake -S . -B build -DTCL_INCLUDE_DIR=/usr/include/tcl8.6 -DTCL_TCLSH=/usr/bin/tclsh8.6
@@ -42,7 +52,7 @@ jobs:
           ctest --test-dir build --output-on-failure
       - name: Run examples
         env:
-          TCLLIBPATH: ${{ github.workspace }}/build
+          TCLLIBPATH: "${{ github.workspace }}/build ${{ github.workspace }}/build-tjson"
         run: |
           for example in examples/0*.tcl; do
             tclsh8.6 "$example"

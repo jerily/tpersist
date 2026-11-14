@@ -2,7 +2,8 @@
 
 Each numbered example is a complete Tcl script. The database examples use
 in-memory SQLite and require `tdbc::sqlite3`. The query-composition example
-only needs `tpersist`.
+only needs `tpersist`. The JSON schema example also requires `tjson 1.0.27`
+or newer and reads its schema from `examples/sql/`.
 
 Examples use the concise `-expr` syntax, with the previous dictionary-builder
 form preserved beside it as comments. Both forms produce the same statement
@@ -22,6 +23,7 @@ TCLLIBPATH="$PWD/build" tclsh8.6 examples/01_crud.tcl
 | [04_transactions.tcl](04_transactions.tcl) | TclOO transactions, atomic updates, nested scopes, error recovery, explicit savepoints via a borrowed connection |
 | [05_types_and_nulls.tcl](05_types_and_nulls.tcl) | Wide integers, Unicode, byte arrays, exact text, NULL versus empty strings |
 | [06_optional_oo.tcl](06_optional_oo.tcl) | Separate TclOO package, query methods, forks, procedural interoperability, automatic cleanup |
+| [07_json_schema.tcl](07_json_schema.tcl) | Apply a versioned schema file repeatedly, preserving existing data |
 
 For PostgreSQL or MySQL, use the same statement builders with a connection:
 

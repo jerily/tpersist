@@ -300,7 +300,9 @@ db_define_table name columnDictionary ?-schema schema? ?-primary_key names? ?-un
 db_schema_sql definition ?-dialect sqlite|postgresql|mysql?
 db_create_table connection definition ?-if_not_exists boolean?
 db_drop_table connection table ?-if_exists boolean?
-db_create_index connection name table columns ?-unique boolean? ?-if_not_exists boolean?
+db_create_index connection name table columns ?-unique boolean? ?-if_not_exists boolean? ?-descending names?
+db_read_schema filename
+db_apply_schema connection filename ?-additive boolean?
 ```
 
 Each column specification is a dictionary with required `type`. Supported schema
@@ -324,6 +326,13 @@ flags or the table's `-primary_key`, but not both forms together.
 `on_update` actions: `cascade`, `restrict`, `no action`, `set null`, or
 `set default`. MySQL rejects `set default`. MySQL also rejects
 `db_create_index ... -if_not_exists 1`.
+
+JSON schemas are versioned files stored under `sql/`. `db_read_schema` validates
+and returns table/index definitions; `db_apply_schema` creates missing objects.
+Its `-additive true` option also adds supported missing columns; the default is
+`false`.
+See [JSON schema files](schema-json.md) for the format, defaults, and transaction
+behavior. These procedures load `tjson 1.0.27` or newer on first use.
 
 ## Dictionary format and errors
 

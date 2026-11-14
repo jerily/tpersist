@@ -1,3 +1,8 @@
+# Copyright Jerily LTD. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026 Neofytos Dimitriou (neo@jerily.cy)
+# SPDX-License-Identifier: MIT.
+
+# Test expression parsing, validation, and compilation.
 package require tcltest 2
 package require tpersist
 namespace import ::tcltest::test

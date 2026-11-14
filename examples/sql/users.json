@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "tables": [
+    {
+      "name": "users",
+      "columns": {
+        "id": {"type": "integer", "primary_key": true, "auto_increment": true},
+        "email": {"type": "varchar", "length": 255, "not_null": true},
+        "active": {"type": "boolean", "not_null": true, "default": true},
+        "created_at": {"type": "bigint", "not_null": true, "default": 0}
+      },
+      "indexes": [
+        {"name": "users_email", "columns": ["email"], "unique": true},
+        {"name": "users_recent", "columns": ["active", "created_at", "id"], "descending": ["created_at"]}
+      ]
+    }
+  ]
+}

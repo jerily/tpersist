@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "tables": [
+    {
+      "name": "good",
+      "columns": {
+        "id": {
+          "type": "integer"
+        }
+      }
+    },
+    {
+      "name": "bad",
+      "columns": {
+        "id": {
+          "type": "integer"
+        }
+      },
+      "foreign_keys": [
+        {
+          "columns": [
+            "id"
+          ],
+          "table": "good",
+          "referenced_columns": [
+            "id"
+          ],
+          "on_delete": "set default"
+        }
+      ]
+    }
+  ]
+}

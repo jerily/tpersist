@@ -1,3 +1,8 @@
+# Copyright Jerily LTD. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026 Neofytos Dimitriou (neo@jerily.cy)
+# SPDX-License-Identifier: MIT.
+
+# Demonstrate the optional TclOO query interface.
 package require tpersist::oo
 namespace import ::tpersist::db_*
 

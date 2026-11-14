@@ -1,3 +1,7 @@
+# Copyright Jerily LTD. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026 Neofytos Dimitriou (neo@jerily.cy)
+# SPDX-License-Identifier: MIT.
+
 # Offline compilation works without TDBC or a running database.
 package require tpersist
 namespace import ::tpersist::db_*

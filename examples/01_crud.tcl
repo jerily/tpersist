@@ -1,3 +1,7 @@
+# Copyright Jerily LTD. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026 Neofytos Dimitriou (neo@jerily.cy)
+# SPDX-License-Identifier: MIT.
+
 # An in-memory database; no files or external services are required.
 package require tpersist
 namespace import ::tpersist::db_*

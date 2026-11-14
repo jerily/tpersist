@@ -7,7 +7,7 @@ sources implement TDBC adaptation and schema definitions. CMake embeds these
 scripts into the library, so shared and static builds expose the same API without
 a runtime dependency on files in the source tree.
 
-There is no direct SQLite, libpq, MySQL, or cJSON link dependency. Runtime
+There is no direct SQLite, libpq, MySQL, or cJSON link dependency. JSON schema loading uses the Tcl package `tjson 1.0.27` or newer. Runtime
 database access goes through the installed TDBC packages.
 
 ## Build
@@ -44,6 +44,10 @@ headers and an appropriate deployment environment.
 
 ## Tests
 
+Install `tjson 1.0.27` or newer for the matching Tcl version, or add its build
+directory to `TCLLIBPATH`. The shared test suite requires it. Schema fixtures
+belong in `tests/sql/`; example schemas belong in `examples/sql/`.
+
 The `tcltest` suite covers:
 
 - Reusable query branches and copy-on-write behavior.
@@ -53,6 +57,8 @@ The `tcltest` suite covers:
 - Named and typed parameters, SQL injection strings, NULL, blobs, and integers
   beyond floating-point precision, with explicit overflow rejection on Tcl 8.6.
 - Schema constraints, defaults, joins, aggregates, CRUD, and RETURNING.
+- Versioned JSON schemas, validation before DDL, repeatable table/index creation,
+  and opt-in additions of missing columns.
 - Transaction success and failures, nested savepoints, and Tcl control flow.
 - Result/statement cleanup, interpreter deletion, and error propagation.
 - TDBC protocol tests using test doubles, plus live database tests.
@@ -103,6 +109,7 @@ gets it through the linker flags.
 | `src/expressions.c` | Tokenizer and bounded SQL-style expression parser |
 | `library/tdbc.tcl` | Connections, execution, row loops, transactions |
 | `library/schema.tcl` | Table metadata, DDL compilation, schema commands |
+| `library/schema_json.tcl` | JSON schema validation and additive application via tjson |
 | `library/oo.tcl` | Separate optional TclOO convenience package |
 | `tests/` | Compiler, schema, protocol, SQLite and optional server integration tests |
 | `examples/` | Runnable usage examples |

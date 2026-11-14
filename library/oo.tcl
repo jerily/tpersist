@@ -1,4 +1,7 @@
-# SPDX-License-Identifier: MIT
+# Copyright Jerily LTD. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026 Neofytos Dimitriou (neo@jerily.cy)
+# SPDX-License-Identifier: MIT.
+
 # Optional convenience layer. The core package never sources this file.
 package require TclOO
 package require tpersist 0.1.0

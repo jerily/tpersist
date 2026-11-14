@@ -1,0 +1,1 @@
+{"version": 1, "tables": [{"name": "t", "columns": {"amount": {"type": "decimal", "default": 1.25}}}]}

@@ -1,9 +1,15 @@
+# Copyright Jerily LTD. All Rights Reserved.
+# SPDX-FileCopyrightText: 2026 Neofytos Dimitriou (neo@jerily.cy)
+# SPDX-License-Identifier: MIT.
+
+# Test database operations against in-memory SQLite.
 package require tcltest 2
 package require tpersist
 namespace import ::tcltest::test
 namespace import ::tpersist::db_*
 ::tcltest::testConstraint sqlite [expr {![catch {package require tdbc::sqlite3}]}]
 
+# Create an in-memory database with the users fixture.
 proc fresh {{autobegin 1}} {
     set db [db_connect -database :memory: -autobegin $autobegin]
     db_create_table $db [db_define_table users {
@@ -15,6 +21,7 @@ proc fresh {{autobegin 1}} {
     }]
     return $db
 }
+# Insert the standard sample users.
 proc populate {db} {
     db_transaction $db {
         foreach {name age} {Alice 30 Bob 20 Carol 40} {
@@ -22,6 +29,7 @@ proc populate {db} {
         }
     }
 }
+# Read names in a stable order.
 proc names {db} {
     # set rows [dict get [db_execute $db [db_order_by [db_select users -columns name] name]] rows]
     set rows [dict get [db_execute $db [db_order_by [db_select users -expr {name}] -expr {name}]] rows]
