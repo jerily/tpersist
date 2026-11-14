@@ -30,8 +30,15 @@ proc jsonlSetup {dialect} {
     db_create_index $source {label index} {z parent} {label big} -descending big
     db_create_table $source [db_define_table child {parent {type integer} label {type text}} -foreign_keys {{columns parent table {z parent} referenced_columns id on_delete cascade}}]
     db_create_table $source [db_define_table empty {value {type text}}]
+    set label "quotes \" newline\nλ 日本語"
+    # Older Tcl 8.6 PostgreSQL drivers send surrogate UTF-8 to libpq and reject
+    # supplementary characters before export. Keep that coverage on SQLite and
+    # Tcl 9, while exercising BMP Unicode with every driver used by CI.
+    if {$dialect ne "postgresql" || [package vcompare [package provide Tcl] 9] >= 0} {
+        append label " 😀"
+    }
     db_execute $source [db_values [db_insert {z parent}] [dict create \
-        id [db_value 42 -type integer] label [db_value "quotes \" newline\nλ 日本語 😀"] \
+        id [db_value 42 -type integer] label [db_value $label] \
         big [db_value 9007199254740993 -type bigint] payload [db_value [binary decode hex 00ff014100] -type binary] \
         missing [db_null]] -expressions]
     db_execute $source [db_values [db_insert {z parent}] [dict create \

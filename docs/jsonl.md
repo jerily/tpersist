@@ -62,6 +62,8 @@ and text containing NUL uses an object `{"utf8": "<base64 UTF-8>"}`. The archive
 column type determines binding. This is a versioned interchange format, not a
 plain JSON serialization of database rows. Database type conversions still apply
 when importing into another dialect, especially SQLite numeric affinity.
+Some older Tcl 8.6 PostgreSQL drivers reject supplementary Unicode characters;
+use a current Tcl 9/TDBC runtime when restoring data containing those characters.
 
 Import creates missing tables and indexes from the archived schema. It requires
 existing selected tables to be empty and to match the archived table definition;
