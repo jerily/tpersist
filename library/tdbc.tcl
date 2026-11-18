@@ -224,13 +224,24 @@ proc ::tpersist::db_rollback {handle} {
 }
 
 # Create a named savepoint in the active transaction.
+proc ::tpersist::_transactionCommand {handle sql} {
+    set c [_connection $handle]
+    # MySQL excludes SAVEPOINT commands from its prepared statement protocol.
+    # These commands contain only library SQL and quoted identifiers, no values.
+    if {[dict get $c dialect] eq "mysql"} {
+        [dict get $c command] evaldirect $sql
+    } else {
+        _raw $handle $sql
+    }
+}
+
 proc ::tpersist::db_savepoint {handle name} {
     variable connections
     set c [_connection $handle]
     if {![dict get $c transaction]} { _fail TRANSACTION "savepoint requires an active transaction" }
     set stack [dict get $c savepoints]
     if {$name in $stack} { _fail TRANSACTION "savepoint name is already active" }
-    _raw $handle "SAVEPOINT [_quote $name [dict get $c dialect]]"
+    _transactionCommand $handle "SAVEPOINT [_quote $name [dict get $c dialect]]"
     lappend stack $name
     dict set connections $handle savepoints $stack
     return
@@ -249,7 +260,7 @@ proc ::tpersist::_savepointTop {handle name} {
 # Undo changes made since the named savepoint.
 proc ::tpersist::db_rollback_to {handle name} {
     set c [_savepointTop $handle $name]
-    _raw $handle "ROLLBACK TO SAVEPOINT [_quote $name [dict get $c dialect]]"
+    _transactionCommand $handle "ROLLBACK TO SAVEPOINT [_quote $name [dict get $c dialect]]"
     return
 }
 
@@ -257,7 +268,7 @@ proc ::tpersist::db_rollback_to {handle name} {
 proc ::tpersist::db_release {handle name} {
     variable connections
     set c [_savepointTop $handle $name]
-    _raw $handle "RELEASE SAVEPOINT [_quote $name [dict get $c dialect]]"
+    _transactionCommand $handle "RELEASE SAVEPOINT [_quote $name [dict get $c dialect]]"
     dict set connections $handle savepoints [lrange [dict get $c savepoints] 0 end-1]
     return
 }

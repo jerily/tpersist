@@ -181,6 +181,25 @@ static int build(TpContext *c, const char *cmd, int objc, Tcl_Obj *const v[], Tc
                 Tcl_DictObjNext(&search,&key,&val,&done);
             }
             Tcl_DictObjDone(&search); TpPut(c,d,"values",values);
+        } else if (!strcmp(cmd,"on_conflict")) {
+            ARGS(4,5,"statement columnList assignments ?-expressions?");
+            if(strcmp(k,"insert")) return TpError(c,"VALIDATION","on_conflict requires insert");
+            if(objc==5 && strcmp(OPT(4),"-expressions")) return TpError(c,"ARGS","expected -expressions");
+            TpSize count;
+            if(Tcl_ListObjLength(c->interp,v[2],&count)!=TCL_OK) return TCL_ERROR;
+            if(!count) return TpError(c,"VALIDATION","on_conflict requires at least one target column");
+            Tcl_Obj *conflict=TpDict(c), *values=TpDict(c);
+            Tcl_DictSearch search; Tcl_Obj *key,*val; int done;
+            if(Tcl_DictObjFirst(c->interp,v[3],&search,&key,&val,&done)!=TCL_OK) return TCL_ERROR;
+            while(!done) {
+                Tcl_Obj *node=val;
+                if(objc==4) { node=TpNode(c,"value"); TpPut(c,node,"value",val); TpPut(c,node,"type",TpStr(c,"auto")); }
+                Tcl_DictObjPut(NULL,values,key,node);
+                Tcl_DictObjNext(&search,&key,&val,&done);
+            }
+            Tcl_DictObjDone(&search);
+            TpPut(c,conflict,"columns",v[2]); TpPut(c,conflict,"values",values);
+            TpPut(c,d,"on_conflict",conflict);
         } else if (!strcmp(cmd,"join")) {
             ARGS(4,6,"statement table predicate ?-type inner|left?");
             if(strcmp(k,"select")) return TpError(c,"VALIDATION","join requires select");
@@ -193,7 +212,7 @@ static int build(TpContext *c, const char *cmd, int objc, Tcl_Obj *const v[], Tc
             TpPut(c,d,"joins",items);
         } else if (!strcmp(cmd,"clear")) {
             ARGS(3,3,"statement clause");
-            if(!contains("where having order_by group_by returning limit offset distinct values joins",OPT(2)))
+            if(!contains("where having order_by group_by returning limit offset distinct values joins on_conflict",OPT(2)))
                 return TpError(c,"ARGS","unknown clause to clear");
             Tcl_DictObjRemove(NULL,d,v[2]);
         } else return TpError(c,"ARGS","unknown builder command");

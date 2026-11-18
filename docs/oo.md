@@ -58,7 +58,7 @@ dictionary to a live connection with automatic ownership.
 
 | Method | Meaning |
 |---|---|
-| `where`, `having`, `order_by`, `group_by`, `returning`, `limit`, `offset`, `distinct`, `values`, `join`, `clear` | Corresponding procedural builder arguments, excluding the statement |
+| `where`, `having`, `order_by`, `group_by`, `returning`, `limit`, `offset`, `distinct`, `values`, `join`, `on_conflict`, `clear` | Corresponding procedural builder arguments, excluding the statement |
 | `fork` | Independent query with the current statement and same connection/owner |
 | `statement` | Current native Tcl dictionary for inspection or procedural interoperability |
 | `compile ?options...?` | Compile, using the attached connection's dialect by default or SQLite when offline |
