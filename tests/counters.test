@@ -1,0 +1,127 @@
+package require tcltest 2
+package require tpersist
+namespace import ::tcltest::test
+namespace import ::tpersist::db_*
+
+proc counterOptions {dialect} {
+    set options [list -database [file join [::tcltest::temporaryDirectory] counter-[pid].sqlite3] -timeout 10000]
+    if {$dialect ne "sqlite"} {set options $::env(TPERSIST_TEST_[string toupper $dialect])}
+    return $options
+}
+proc counterSetup {dialect} {
+    set options [counterOptions $dialect]
+    set db [db_connect -dialect $dialect -autobegin 0 {*}$options]
+    set table counter_[pid]_[clock clicks]
+    db_create_table $db [db_define_table $table {
+        tenant {type varchar length 64 not_null 1}
+        id {type varchar length 64 not_null 1}
+        hits {type bigint not_null 1}
+        expires {type bigint not_null 1}
+        label {type varchar length 64 not_null 1}
+    } -primary_key {tenant id} -unique {{label}}]
+    return [list $db $table]
+}
+
+foreach dialect {sqlite postgresql mysql} {
+    ::tcltest::testConstraint counter_$dialect [expr {$dialect eq "sqlite" ?
+        ![catch {package require tdbc::sqlite3}] : [info exists ::env(TPERSIST_TEST_[string toupper $dialect])]}]
+    test counter-$dialect {atomic increments return their own values, isolate keys, and retain initial values} -constraints counter_$dialect -setup {
+        lassign [counterSetup $dialect] db table
+    } -body {
+        set result {}
+        foreach {tenant expiry label} {a 100 first a 200 changed b 300 other a 400 ignored} {
+            lappend result [db_increment $db $table [dict create tenant $tenant id {q'quoted}] hits \
+                -initial [dict create expires $expiry label $label] -types {tenant text id text expires bigint label text}]
+        }
+        set rows [dict get [db_execute $db [db_order_by [db_select $table -columns {tenant hits expires label}] tenant]] rows]
+        list $result $rows
+    } -cleanup {
+        db_drop_table $db $table
+        db_disconnect $db
+    } -result {{1 2 1 3} {{tenant a hits 3 expires 100 label first} {tenant b hits 1 expires 300 label other}}}
+
+    test counter-rollback-$dialect {counter changes participate in caller rollback and other unique constraints never update unrelated rows} -constraints counter_$dialect -setup {
+        lassign [counterSetup $dialect] db table
+    } -body {
+        db_increment $db $table {tenant a id x} hits -initial {expires 100 label first}
+        set failed [catch {db_increment $db $table {tenant b id y} hits -initial {expires 100 label first}}]
+        catch {db_transaction $db {
+            db_increment $db $table {tenant a id x} hits -initial {expires 200 label changed}
+            db_increment $db $table {tenant c id z} hits -initial {expires 200 label new}
+            error rollback
+        }}
+        list $failed [dict get [db_execute $db [db_select $table -columns {tenant hits expires}]] rows]
+    } -cleanup {
+        db_drop_table $db $table
+        db_disconnect $db
+    } -result {1 {{tenant a hits 1 expires 100}}}
+
+    test counter-autobegin-$dialect {default autobegin leaves counter writes available for caller rollback} -constraints counter_$dialect -setup {
+        lassign [counterSetup $dialect] db table
+        db_disconnect $db
+        set db [db_connect -dialect $dialect {*}[counterOptions $dialect]]
+    } -body {
+        set values [list [db_increment $db $table {tenant a id x} hits -initial {expires 100 label first}] \
+            [db_increment $db $table {tenant a id x} hits -initial {expires 200 label changed}]]
+        db_rollback $db
+        set rows [dict get [db_execute $db [db_select $table]] rows]
+        db_rollback $db
+        list $values $rows
+    } -cleanup {
+        db_drop_table $db $table
+        db_disconnect $db
+    } -result {{1 2} {}}
+
+    test counter-concurrent-$dialect {independent clients racing the first insert receive distinct consecutive counts} -constraints counter_$dialect -setup {
+        lassign [counterSetup $dialect] db table
+        set workers {}
+    } -body {
+        set start [expr {[clock milliseconds] + 300}]
+        for {set i 0} {$i < 4} {incr i} {
+            lappend workers [open [list | [info nameofexecutable] \
+                [file join $::tcltest::testsDirectory counter-worker.tcl] $::auto_path $dialect [counterOptions $dialect] $table $start] r]
+        }
+        set values {}
+        foreach worker $workers {lappend values {*}[read $worker]}
+        foreach worker $workers {close $worker}
+        set workers {}
+        set expected {}; for {set i 1} {$i <= 80} {incr i} {lappend expected $i}
+        set count [dict get [lindex [dict get [db_execute $db [db_select $table -columns hits]] rows] 0] hits]
+        list [expr {[lsort -integer $values] eq $expected}] $count
+    } -cleanup {
+        foreach worker $workers {catch {close $worker}}
+        db_drop_table $db $table
+        db_disconnect $db
+    } -result {1 80}
+}
+
+test conflict-compile {targets and values are quoted/bound with update expressions and RETURNING} -body {
+    set insert [db_values [db_insert counters] {tenant a id x hits 1}]
+    set query [db_returning [db_on_conflict $insert {tenant id} \
+        [dict create hits [db_add [db_col hits] [db_value 1 -type bigint]]] -expressions] hits]
+    set compiled [db_compile $query -dialect postgresql]
+    list [dict get $compiled sql] [dict values [dict get $compiled params]] \
+        [dict exists $insert on_conflict] [dict exists [db_clear $query on_conflict] on_conflict]
+} -result {{INSERT INTO "counters" ("tenant", "id", "hits") VALUES (:p1, :p2, :p3) ON CONFLICT ("tenant", "id") DO UPDATE SET "hits" = ("hits" + CAST(:p4 AS BIGINT)) RETURNING "hits"} {a x 1 1} 0 0}
+
+test conflict-do-nothing {empty assignments compile to targeted DO NOTHING} -body {
+    dict get [db_compile [db_on_conflict [db_values [db_insert t] {id x}] id {}]] sql
+} -result {INSERT INTO "t" ("id") VALUES (:p1) ON CONFLICT ("id") DO NOTHING}
+
+test conflict-invalid {unsupported dialects and malformed clauses fail explicitly} -body {
+    set results {}
+    foreach script {
+        {db_on_conflict [db_update t] id {n 1}}
+        {db_on_conflict [db_insert t] {} {n 1}}
+        {db_on_conflict [db_insert t] id {n 1} -bogus}
+        {db_compile [db_on_conflict [db_insert t] id {n 1}] -dialect mysql}
+        {db_compile [dict set s on_conflict {columns id}]}
+    } {
+        set s [db_insert t]
+        lappend results [catch {eval $script}]
+    }
+    set results
+} -result {1 1 1 1 1}
+
+file delete -force [file join [::tcltest::temporaryDirectory] counter-[pid].sqlite3]
+::tcltest::cleanupTests

@@ -142,6 +142,7 @@ existing dictionary arguments, with no implicit parsing.
 | `db_offset statement count` | Replaces offset; nonnegative signed 64-bit integer |
 | `db_distinct statement boolean` | Sets DISTINCT; SELECT |
 | `db_values statement dictionary ?-expressions?` | Merges assignments; INSERT, UPDATE |
+| `db_on_conflict statement columnList assignments ?-expressions?` | INSERT conflict target and update assignments; SQLite/PostgreSQL |
 | `db_returning statement expression ?expression ...?` | Appends projections; INSERT, UPDATE, DELETE |
 | `db_clear statement clause` | Removes a clause |
 
@@ -158,7 +159,7 @@ set update [db_values [db_update users] [dict create \
 
 Repeated assignment keys replace their earlier values. Supported `db_clear`
 clauses are `where`, `having`, `order_by`, `group_by`, `returning`, `limit`,
-`offset`, `distinct`, `values`, and `joins`. Removing a filter from UPDATE or
+`offset`, `distinct`, `values`, `joins`, and `on_conflict`. Removing a filter from UPDATE or
 DELETE allows all rows to be affected, following ordinary SQL semantics.
 
 ## Compilation and parameters
@@ -258,6 +259,35 @@ empty query. Older SQLite driver combinations use a Unicode replacement characte
 as a NULL sentinel; use a recent SQLite Tcl/TDBC combination for lossless text
 containing that character. These are driver limitations, not JSON conversions.
 
+## Atomic counters
+
+`db_increment connection table keys column ?-initial dictionary? ?-types dictionary?`
+inserts a counter at 1 or atomically increments it, returning this operation's
+value. `keys` is a nonempty dictionary identifying a PRIMARY KEY or UNIQUE
+constraint. Its columns must be non-null. The counter must be a non-null integer.
+`-initial` supplies insert-only values such as expiry; existing values stay intact.
+`-types` optionally specifies parameter types by column name. All data is bound.
+
+```tcl
+set count [db_increment $db limits {tenant example id bucket-123} hits \
+    -initial {expires 1800000000} -types {tenant text id text expires bigint}]
+```
+
+SQLite (3.35+) and PostgreSQL use targeted `ON CONFLICT ... DO UPDATE ... RETURNING`.
+MySQL uses a transaction with a targeted UPDATE, an INSERT if absent, and a SELECT
+while holding the row lock. It handles concurrent first inserts without updating
+rows that conflict on unrelated unique constraints. MySQL requires transactional
+tables (InnoDB). Caller transactions and autobegin remain in control of commit;
+serialization failures inside a caller transaction must be retried by the caller.
+When it owns the transaction, the MySQL implementation retries deadlocks up to
+three attempts. Other constraint errors propagate normally. For counters, prefer
+a table whose unique constraint is just the selected key.
+
+The lower-level `db_on_conflict` builder accepts bound values or expression nodes
+with `-expressions`; an empty assignments dictionary means `DO NOTHING`. It is
+rejected for MySQL because `ON DUPLICATE KEY UPDATE` cannot specify the same
+conflict target. Use `db_increment` for portable counter semantics.
+
 ## Transactions
 
 ```tcl
@@ -343,9 +373,10 @@ version 1 kind select table {node table name users} columns {{node col name id}}
 ```
 
 Optional keys correspond to clauses: `where`, `having`, `joins`, `order_by`,
-`group_by`, `limit`, `offset`, `distinct`, `values`, and `returning`. Predicate
+`group_by`, `limit`, `offset`, `distinct`, `values`, `returning`, and `on_conflict`. Predicate
 and expression clauses contain lists of expression dictionaries. `values` maps
 column names to expression dictionaries. A join has `table`, `on`, and `type`.
+`on_conflict` contains a `columns` list and a `values` assignment dictionary.
 `db_define_table` returns a separate versioned dictionary with kind `table_def`.
 
 Use builders for normal code; dictionaries can also be inspected and edited with
@@ -361,7 +392,7 @@ native codes. Database errors retain the driver's error code and SQLSTATE when
 provided; some driver errors use `NONE`.
 
 This release has no ORM tracking, relationship loading, migration generation,
-connection pool, raw SQL API, CTEs, window functions, subqueries, upserts, or
+connection pool, raw SQL API, CTEs, window functions, subqueries, or
 table aliases on write statements. RETURNING requires SQLite 3.35+ or PostgreSQL
 and is rejected for MySQL. Backend capabilities and type semantics remain those
 of the actual database and installed TDBC driver.

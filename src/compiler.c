@@ -361,7 +361,7 @@ static int statement(Compiler *p,Tcl_Obj *d) {
     }
     int insert=!strcmp(k,"insert"), update=!strcmp(k,"update"), del=!strcmp(k,"delete");
     if(!insert && !update && !del) return TpError(&p->c,"VALIDATION","unknown statement kind");
-    TRY(keys(p,d,insert?"version kind table values returning":update?"version kind table values where returning":"version kind table where returning"));
+    TRY(keys(p,d,insert?"version kind table values returning on_conflict":update?"version kind table values where returning":"version kind table where returning"));
     ADD(insert?"INSERT INTO ":update?"UPDATE ":"DELETE FROM "); TRY(table(p,source,0));
     if(!del) {
         Tcl_Obj *values=TpGet(&p->c,d,"values"); if(!values) values=TpDict(&p->c);
@@ -392,6 +392,34 @@ static int statement(Compiler *p,Tcl_Obj *d) {
                 }
                 Tcl_DictObjDone(&search); TRY(code); ADD(")");
             }
+        }
+    }
+    Tcl_Obj *conflict=TpGet(&p->c,d,"on_conflict");
+    if(conflict) {
+        if(!strcmp(p->dialect,"mysql")) return TpError(&p->c,"UNSUPPORTED","ON CONFLICT is not supported by the mysql dialect");
+        TRY(keys(p,conflict,"columns values"));
+        Tcl_Obj *columns=TpGet(&p->c,conflict,"columns"), *values=TpGet(&p->c,conflict,"values");
+        if(!columns || !values) return TpError(&p->c,"VALIDATION","on_conflict requires columns and values");
+        TpSize n; Tcl_Obj **items;
+        TRY(Tcl_ListObjGetElements(p->c.interp,columns,&n,&items));
+        if(!n) return TpError(&p->c,"VALIDATION","on_conflict requires at least one target column");
+        ADD(" ON CONFLICT (");
+        for(TpSize i=0;i<n;i++) { if(i) ADD(", "); TRY(identifier(p,items[i])); }
+        ADD(") DO ");
+        TRY(Tcl_DictObjSize(p->c.interp,values,&n));
+        if(!n) { ADD("NOTHING"); } else {
+            ADD("UPDATE SET ");
+            Tcl_DictSearch search; Tcl_Obj *key,*val; int done,first=1,code=TCL_OK;
+            TRY(Tcl_DictObjFirst(p->c.interp,values,&search,&key,&val,&done));
+            while(!done) {
+                if(!first) ADD(", ");
+                first=0;
+                if((code=identifier(p,key))!=TCL_OK) break;
+                ADD(" = ");
+                if((code=expression(p,val,0))!=TCL_OK) break;
+                Tcl_DictObjNext(&search,&key,&val,&done);
+            }
+            Tcl_DictObjDone(&search); TRY(code);
         }
     }
     if(!insert) TRY(clause(p,d,"where"," WHERE "," AND ",0,0));

@@ -22,7 +22,7 @@ int Tpersist_Init(Tcl_Interp *interp) {
     static const char *commands[]={"col","table","star","null","value","param",
         "eq","ne","lt","le","gt","ge","like","add","sub","mul","div",
         "in","not_in","and","or","not","is_null","is_not_null","asc","desc",
-        "sum","avg","min","max","count","alias","select","insert","update","delete",
+        "sum","avg","min","max","count","alias","select","insert","update","delete","on_conflict",
         "where","having","order_by","group_by","returning","limit","offset","distinct",
         "values","join","clear",NULL};
     for(int i=0;commands[i];i++) {
