@@ -27,23 +27,9 @@ proc ::tpersist::_jsonlCheck {options {path {}}} {
     if {$path ne {} && [dict get $options max_bytes] ne {} && [file size $path] > [dict get $options max_bytes]} {_fail LIMIT "JSONL file size limit exceeded"}
 }
 
-# Handle JSON null explicitly: tjson's typed null spelling differs between
-# releases. Its scalar encoder still supplies string escaping and booleans.
-proc ::tpersist::_jsonlEncode {typed} {
-    lassign $typed type value
-    switch -- $type {
-        NULL {return null}
-        M {
-            set parts {}
-            dict for {key item} $value {lappend parts "[::tjson::typed_to_json [list S $key]]:[_jsonlEncode $item]"}
-            return \{[join $parts ,]\}
-        }
-        L {return \[[join [lmap item $value {_jsonlEncode $item}] ,]\]}
-        default {return [::tjson::typed_to_json $typed]}
-    }
+proc ::tpersist::_jsonlWrite {channel record} {
+    ::tjson::jsonl_puts $channel [list M $record]
 }
-
-proc ::tpersist::_jsonlWrite {channel record} {puts $channel [_jsonlEncode [list M $record]]}
 
 # Tcl's gunzip channel can report EOF for a truncated trailer. Verify the
 # inflater reached its own end marker before using the archive. Read bounded
@@ -64,7 +50,7 @@ proc ::tpersist::_jsonlValidateGzip {channel options} {
 }
 
 proc ::tpersist::_jsonlReady {handle} {
-    package require tjson 1.0.27
+    package require tjson 1.0.30
     if {[dict get [_connection $handle] transaction]} {_fail TRANSACTION "JSONL export/import requires no active transaction"}
 }
 
@@ -89,12 +75,12 @@ proc ::tpersist::db_export_jsonl {handle path args} {
             dict set byName $name $snapshot
             lappend snapshots $snapshot
         }
-        set schemaJson [_jsonlEncode [list M [dict create version {N 1} tables [list L $snapshots]]]]
+        set schemaJson [::tjson::typed_to_json [list M [dict create version {N 1} tables [list L $snapshots]]]]
         set definitions [_backupOrder [dict get [_schemaDocument $schemaJson] tables]]
         set snapshots [lmap definition $definitions {dict get $byName [dict get $definition name]}]
         set channel [file tempfile temporary [file join [file dirname $path] .tpersist-jsonl-]]
         if {[dict get $options gzip]} {zlib push gzip $channel}
-        fconfigure $channel -encoding utf-8 -translation lf
+        fconfigure $channel -translation binary
         _jsonlWrite $channel [dict create format {S tpersist} version {N 1} dialect [list S $dialect] created_at [list N [clock seconds]] schema [list M [dict create version {N 1} tables [list L $snapshots]]]]
         set counts {}
         foreach definition $definitions {
@@ -149,7 +135,7 @@ proc ::tpersist::db_export_jsonl {handle path args} {
 proc ::tpersist::_jsonlRow {channel table columns row} {
     set values {}
     dict for {name spec} $columns {
-        if {![dict exists $row $name]} {dict set values $name {NULL {}}; continue}
+        if {![dict exists $row $name]} {dict set values $name {N null}; continue}
         set value [dict get $row $name]
         if {[dict get $spec type] in {binary blob}} {set value [binary encode base64 -maxlen 0 $value]}
         if {[dict get $spec type] ni {binary blob} && [string first \x00 $value] >= 0} {
@@ -191,9 +177,8 @@ proc ::tpersist::db_import_jsonl {handle path args} {
             _jsonlValidateGzip $channel $options
             zlib push gunzip $channel
         }
-        fconfigure $channel -encoding utf-8 -translation lf
-        if {[gets $channel line] < 0} {_fail JSON "empty JSONL backup"}
-        set root [::tjson::parse $line]
+        fconfigure $channel -translation binary
+        if {![::tjson::jsonl_gets -handle $channel root]} {_fail JSON "empty JSONL backup"}
         try {set document [_jsonlHeader $root]} finally {::tjson::destroy $root}
         set definitions [_backupOrder [dict get $document tables]]
         set allNames [lmap definition $definitions {dict get $definition name}]
@@ -227,7 +212,7 @@ proc ::tpersist::db_import_jsonl {handle path args} {
             } else {
                 if {$dialect eq "postgresql"} {_raw $handle "LOCK TABLE [_tableName $target $dialect] IN ACCESS EXCLUSIVE MODE"}
                 set live [_backupTable $handle $schema $name]
-                set liveDoc [_schemaDocument [_jsonlEncode [list M [dict create version {N 1} tables [list L [list $live]]]]]]
+                set liveDoc [_schemaDocument [::tjson::typed_to_json [list M [dict create version {N 1} tables [list L [list $live]]]]]]
                 if {[db_schema_sql [lindex [dict get $liveDoc tables] 0] -dialect $dialect] ne [db_schema_sql $definition -dialect $dialect]} {_fail SCHEMA "existing table does not match archived schema: $name"}
                 foreach index [dict get $liveDoc indexes] {
                     if {$index ni [dict get $document indexes]} {_fail SCHEMA "existing index does not match archived schema: [dict get $index name]"}
@@ -250,10 +235,10 @@ proc ::tpersist::db_import_jsonl {handle path args} {
             }
         }
         set complete 0
-        while {[gets $channel line] >= 0} {
-            _jsonlCheck $options
-            set root [::tjson::parse $line]
+        while {[::tjson::jsonl_gets -handle $channel root]} {
             try {
+                _jsonlCheck $options
+                if {$complete} {_fail JSON "records after JSONL footer"}
                 set fields [_schemaNode $root object record]
                 if {[dict exists $fields complete]} {
                     _schemaFields $root {complete counts} {complete counts} footer
@@ -263,9 +248,8 @@ proc ::tpersist::db_import_jsonl {handle path args} {
                     dict for {name node} $actual {
                         if {[_schemaNode $node number footer.count] ne [dict get $counts $name]} {_fail JSON "JSONL row count mismatch: $name"}
                     }
-                    if {[gets $channel line] >= 0} {_fail JSON "records after JSONL footer"}
                     set complete 1
-                    break
+                    continue
                 }
                 _schemaFields $root {table values} {table values} row
                 set name [_schemaNode [dict get $fields table] string row.table]

@@ -27,7 +27,7 @@ cmake --install build
 
 Database execution requires the corresponding `tdbc::sqlite3`,
 `tdbc::postgres`, or `tdbc::mysql` package. SQLite is the default dialect.
-JSON schema loading and JSONL backup/import require `tjson 1.0.27` or newer; other APIs do not load it.
+JSON schema loading requires `tjson 1.0.27` or newer. JSONL backup and import require `tjson 1.0.30` or newer. Both load tjson on first use.
 
 - [Runnable examples](examples/readme.md)
 - [API reference](docs/api.md)

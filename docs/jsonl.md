@@ -1,11 +1,12 @@
 # JSONL schema and data backups
 
-Available in tpersist 0.1.5 for SQLite 3.37 or newer and PostgreSQL 15 or newer. These commands
-load `tjson 1.0.27` lazily and use an ordinary tpersist connection. They require
-no active transaction; they own their snapshot/import transaction.
+The minimum database versions for JSONL backups are SQLite 3.37 and PostgreSQL 15.
+Starting with tpersist 0.1.7, export and import load `tjson 1.0.30` or newer
+on first use. They require a connection with no active transaction and own
+their snapshot or import transaction.
 
 ```tcl
-package require tpersist 0.1.5
+package require tpersist 0.1.7
 namespace import ::tpersist::db_*
 set db [db_connect -database application.sqlite3 -autobegin false]
 
@@ -56,6 +57,14 @@ Each data record has `table` and `values`; the final `complete: true` record has
 counts for every table. A backup is a single JSONL file, optionally gzip compressed,
 so schemas and rows cannot be separated during upload or download.
 
+Version 1 archives from earlier releases can be restored within the JSONL
+record limits. Each UTF-8 record can contain up to 1 MiB before its line ending
+and up to 32 levels of nesting. These limits apply to the whole schema header
+and to each encoded row, including base64 expansion, before compression.
+`-max_bytes` independently limits the archive file size. Import accepts LF,
+CRLF, and a final footer without a newline. A blank, malformed, or oversized
+record raises `TJSON STRICT`.
+
 Non-null scalar values are JSON strings, preserving bigint/decimal precision and
 numeric-looking text. SQL NULL is JSON null, binary values are base64 strings,
 and text containing NUL uses an object `{"utf8": "<base64 UTF-8>"}`. The archived
@@ -88,3 +97,6 @@ cannot faithfully reconstruct. Custom identity sequence settings are rejected;
 sequence counters above the maximum retained row ID are not archived. Roles,
 grants, views, extensions and external application secrets are not backed up.
 Keep native database backups when those objects or features are needed.
+
+On PostgreSQL 18, the catalog check also rejects tables with `NOT NULL`
+constraints, including primary keys. This limitation also applies to tpersist 0.1.6.

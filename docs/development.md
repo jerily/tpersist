@@ -44,7 +44,7 @@ headers and an appropriate deployment environment.
 
 ## Tests
 
-Install `tjson 1.0.27` or newer for the matching Tcl version, or add its build
+Install `tjson 1.0.30` or newer for the matching Tcl version, or add its build
 directory to `TCLLIBPATH`. The shared test suite requires it. Schema fixtures
 belong in `tests/sql/`; example schemas belong in `examples/sql/`.
 
