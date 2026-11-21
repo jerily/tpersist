@@ -1,0 +1,4 @@
+{"format":"tpersist","version":1,"dialect":"sqlite","created_at":1795244885,"schema":{"version":1,"tables":[{"name":"entries","columns":{"id":{"type":"bigint"},"note":{"type":"text","default":null},"payload":{"type":"binary"}},"primary_key":["id"]}]}}
+{"table":"entries","values":{"id":"9007199254740993","note":null,"payload":"AP8="}}
+{"table":"entries","values":{"id":"9007199254740994","note":"café\n日本語","payload":""}}
+{"complete":true,"counts":{"entries":2}}

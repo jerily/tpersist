@@ -11,7 +11,7 @@ set auto_path [linsert $auto_path 0 $build]
 apply {{dir} {source [file join $dir pkgIndex.tcl]}} $build
 set argv [lrange $argv 1 end]
 package require tpersist
-package require tjson 1.0.27
+package require tjson 1.0.30
 if {[info exists ::env(TPERSIST_REQUIRE_SQLITE)] && $::env(TPERSIST_REQUIRE_SQLITE)} {
     package require tdbc::sqlite3
 }

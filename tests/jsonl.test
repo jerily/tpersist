@@ -102,7 +102,7 @@ foreach {dialect constraint} {sqlite jsonlSqlite postgresql jsonlPostgres} {
             [catch {db_import_jsonl $target $path -tables [list {z parent}]}]
     } -cleanup {jsonlCleanup $source $target $dialect} -result {{empty 0} {{z parent} 2} {empty {z parent}} 1 1}
 
-    test jsonl-invalid-$dialect {Truncation, counts, extra records and duplicate fields roll back rows and newly created schemas} -constraints $constraint -setup {
+    test jsonl-invalid-$dialect {Truncation, counts, extra, blank and malformed records and duplicate fields roll back the import} -constraints $constraint -setup {
         lassign [jsonlSetup $dialect] source target
         set path [file join $::tcltest::temporaryDirectory jsonl-backup.jsonl]
         set bad [file join $::tcltest::temporaryDirectory jsonl-bad.jsonl]
@@ -115,12 +115,14 @@ foreach {dialect constraint} {sqlite jsonlSqlite postgresql jsonlPostgres} {
             "[join [lrange $lines 0 end-1] \n]\n" \
             [string map {\"child\":600 \"child\":599} $text] \
             "$text{}\n" \
+            "[join [lrange $lines 0 end-1] \n]\n\n[lindex $lines end]\n" \
+            "[join [lrange $lines 0 end-1] \n]\n[lindex $lines end]garbage\n" \
             [string map {\"format\":\"tpersist\" \"format\":\"tpersist\",\"format\":\"tpersist\"} $text]] {
             jsonlWrite $bad $broken
             lappend results [catch {db_import_jsonl $target $bad}] [db_tables $target]
         }
         set results
-    } -cleanup {jsonlCleanup $source $target $dialect} -result {1 {} 1 {} 1 {} 1 {}}
+    } -cleanup {jsonlCleanup $source $target $dialect} -result {1 {} 1 {} 1 {} 1 {} 1 {} 1 {}}
 
     test jsonl-atomic-$dialect {Failed exports preserve the previous file and never leave an active transaction} -constraints $constraint -setup {
         lassign [jsonlSetup $dialect] source target
@@ -148,6 +150,44 @@ foreach {dialect constraint} {sqlite jsonlSqlite postgresql jsonlPostgres} {
         list [catch {db_import_jsonl $target $path}] [db_tables $target]
     } -cleanup {jsonlCleanup $source $target $dialect} -result {1 {}}
 }
+
+test jsonl-legacy-framing-sqlite {Restore a tpersist 0.1.6 export with CRLF and an unterminated footer} -constraints jsonlSqlite -setup {
+    set db [db_connect -database :memory: -autobegin false]
+    set fixture [file join $::tcltest::testsDirectory fixtures tpersist-0.1.6.jsonl]
+    set path [file join $::tcltest::temporaryDirectory jsonl-backup.jsonl]
+    jsonlWrite $path [string map [list \n \r\n] [string trimright [jsonlRead $fixture] \n]]
+} -body {
+    set counts [db_import_jsonl $db $path]
+    lassign [dict get [db_execute $db [db_order_by [db_select entries] -expr {id ASC}]] rows] first second
+    list $counts [dict get $first id] [dict exists $first note] [binary encode hex [dict get $first payload]] \
+        [dict get $second id] [dict get $second note] [dict get $second payload]
+} -cleanup {
+    db_disconnect $db
+    ::tcltest::removeFile jsonl-backup.jsonl
+} -result [list {entries 2} 9007199254740993 0 00ff 9007199254740994 "café\n日本語" {}]
+
+test jsonl-record-limit-sqlite {An exact 1 MiB row round-trips through gzip and one extra byte fails atomically} -constraints jsonlSqlite -setup {
+    set source [db_connect -database :memory: -autobegin false]
+    set target [db_connect -database :memory: -autobegin false]
+    set path [file join $::tcltest::temporaryDirectory jsonl-backup.jsonl.gz]
+    set bad [file join $::tcltest::temporaryDirectory jsonl-bad.jsonl.gz]
+    db_create_table $source [db_define_table app {v {type text}}]
+    set overhead [string length {{"table":"app","values":{"v":""}}}]
+    set value [string repeat x [expr {1048576 - $overhead}]]
+    foreach v [list small $value] {db_execute $source [db_values [db_insert app] [dict create v $v]]}
+} -body {
+    db_export_jsonl $source $path
+    set archive [jsonlRead $path]
+    set imported [db_import_jsonl $target $path]
+    db_drop_table $target app
+
+    db_execute $source [db_values [db_insert app] [dict create v ${value}x]]
+    catch {db_export_jsonl $source $path} message exportError
+    jsonlWrite $bad [string map [list $value ${value}x] $archive]
+    catch {db_import_jsonl $target $bad} message importError
+    list $imported [dict get $exportError -errorcode] [expr {[jsonlRead $path] eq $archive}] \
+        [dict get $importError -errorcode] [db_tables $target]
+} -cleanup {jsonlCleanup $source $target sqlite} -result {{app 2} {TJSON STRICT} 1 {TJSON STRICT} {}}
 
 test jsonl-catalog-sqlite {System tables, views, virtual and shadow tables are excluded} -constraints jsonlSqlite -setup {
     set db [db_connect -database :memory: -autobegin false]

@@ -74,7 +74,7 @@ proc ::tpersist::_backupDefault {value type dialect} {
     set value [string trim $value]
     # PostgreSQL renders literal defaults with a cast, e.g. ''::text.
     if {$dialect eq "postgresql"} {regsub {::[a-zA-Z][a-zA-Z0-9_ () ,]*$} $value {} value}
-    if {[string equal -nocase $value NULL]} {return {NULL {}}}
+    if {[string equal -nocase $value NULL]} {return {N null}}
     if {[regexp {^'((?:[^']|'')*)'$} $value -> literal]} {
         return [list S [string map {'' '} $literal]]
     }
