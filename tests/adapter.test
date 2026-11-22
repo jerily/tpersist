@@ -51,6 +51,11 @@ proc fakeConnect {dialect} {
     return fake
 }
 
+test adapter-config-reject {unsupported dialect fails before loading an adapter} -body {
+    catch {db_connect_config {db_dialect unknown}} message options
+    dict get $options -errorcode
+} -result {TPERSIST DIALECT}
+
 foreach {dialect quoted} {sqlite {"users"} postgresql {"users"} mysql {`users`}} {
     test adapter-bind-$dialect {dialect SQL and typed dictionary bindings go through TDBC} -setup {
         set db [fakeConnect $dialect]

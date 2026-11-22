@@ -15,7 +15,7 @@ database access goes through the installed TDBC packages.
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
-ctest --test-dir build --output-on-failure
+TCLLIBPATH="/your/prefix/lib ${TCLLIBPATH:-}" ctest --test-dir build --output-on-failure
 cmake --install build --prefix /your/prefix
 ```
 
@@ -46,7 +46,7 @@ headers and an appropriate deployment environment.
 
 Install `tjson 1.0.30` or newer for the matching Tcl version, or add its build
 directory to `TCLLIBPATH`. The shared test suite requires it. Schema fixtures
-belong in `tests/sql/`; example schemas belong in `examples/sql/`.
+belong in `tests/sql/`.
 
 The `tcltest` suite covers:
 
@@ -74,11 +74,11 @@ The runner registers the chosen build's package index explicitly, so an older
 installed copy cannot supply the core or OO script. OO loader regression tests
 use fresh interpreters and also work when selected individually.
 
-SQLite execution tests are skipped when `tdbc::sqlite3` is unavailable. Set
+For SQLite execution tests, install the separate `tpersist-sqlite` package into the test prefix. SQLite execution tests are skipped when it is unavailable. Set
 `TPERSIST_REQUIRE_SQLITE=1` to make missing SQLite support fail the run. Compiler,
 schema, and protocol tests still run without database drivers.
 
-PostgreSQL and MySQL tests require explicit connection options for disposable
+PostgreSQL and MySQL tests require the corresponding tpersist adapter and explicit connection options for disposable
 test databases. Each test creates and drops uniquely named tables. An enabled
 backend that cannot connect fails the suite instead of being silently skipped.
 
@@ -114,7 +114,6 @@ gets it through the linker flags.
 | `library/jsonl.tcl` | Streaming JSONL schema/data export and transactional import |
 | `library/oo.tcl` | Separate optional TclOO convenience package |
 | `tests/` | Compiler, schema, protocol, SQLite and optional server integration tests |
-| `examples/` | Runnable usage examples |
 
 All C objects allocated during a command belong to a per-call arena. Returning
 objects retain normal Tcl references; temporary objects are released on success

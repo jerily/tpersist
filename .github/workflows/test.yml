@@ -26,7 +26,7 @@ jobs:
           --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -ptpersist_test"
           --health-interval 5s --health-timeout 5s --health-retries 30
     env:
-      TCLLIBPATH: ${{ github.workspace }}/build-tjson
+      TCLLIBPATH: "${{ github.workspace }}/build-tjson ${{ github.workspace }}/build-deps/prefix/lib"
       TPERSIST_REQUIRE_SQLITE: "1"
       TPERSIST_TEST_POSTGRESQL: "-host 127.0.0.1 -port 5432 -database tpersist_test -user postgres -password tpersist_test"
       TPERSIST_TEST_MYSQL: "-host 127.0.0.1 -port 3306 -database tpersist_test -user root -password tpersist_test"
@@ -45,18 +45,27 @@ jobs:
         run: |
           cmake -S build-tjson-source -B build-tjson -DTCL_INCLUDE_DIR=/usr/include/tcl8.6 -DTCL_TCLSH=/usr/bin/tclsh8.6
           cmake --build build-tjson --parallel 2
+      - name: Install adapters for the integration tests
+        run: |
+          for dialect in sqlite postgresql mysql; do
+            name="tpersist-$dialect"
+            git clone --quiet --depth 1 --branch v0.1.8 "https://github.com/jerily/$name.git" "build-deps/$name"
+            make -C "build-deps/$name" install PREFIX="$PWD/build-deps/prefix"
+          done
       - name: Build and test shared extension
         run: |
           cmake -S . -B build -DTCL_INCLUDE_DIR=/usr/include/tcl8.6 -DTCL_TCLSH=/usr/bin/tclsh8.6
           cmake --build build --parallel 2
           ctest --test-dir build --output-on-failure
-      - name: Run examples
+      - uses: actions/checkout@v4
+        with:
+          repository: jerily/tpersist-examples
+          ref: v0.1.8
+          path: build-deps/tpersist-examples
+      - name: Run examples against this build
         env:
-          TCLLIBPATH: "${{ github.workspace }}/build ${{ github.workspace }}/build-tjson"
-        run: |
-          for example in examples/0*.tcl; do
-            tclsh8.6 "$example"
-          done
+          TCLLIBPATH: "${{ github.workspace }}/build ${{ github.workspace }}/build-tjson ${{ github.workspace }}/build-deps/prefix/lib"
+        run: make -C build-deps/tpersist-examples check TCLSH=tclsh8.6
       - name: Test static embedding
         run: |
           cmake -S . -B build-static -DBUILD_SHARED_LIBS=OFF -DTCL_INCLUDE_DIR=/usr/include/tcl8.6 -DTCL_TCLSH=/usr/bin/tclsh8.6

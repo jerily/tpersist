@@ -30,7 +30,7 @@ test oo-1.4 {loading the OO layer does not modify application globals} -body {
 } -cleanup {interp delete oochild} -result application-value
 # Individual tests must also work when the loader test is filtered out.
 package require tpersist::oo
-::tcltest::testConstraint ooSqlite [expr {![catch {package require tdbc::sqlite3}]}]
+::tcltest::testConstraint ooSqlite [expr {![catch {package require tpersist-sqlite}]}]
 
 test oo-1.2 {standalone queries can fork without changing their base or source dictionary} -setup {
     set original [db_select users]

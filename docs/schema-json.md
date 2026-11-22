@@ -1,7 +1,7 @@
 # JSON schema files
 
 Store package schemas in `sql/schema.json` (or named files under `sql/`).
-Examples use `examples/sql/`; tests use `tests/sql/`. Resolve paths relative to
+The standalone examples package keeps its schema in `sql/`. Core tests use `tests/sql/`. Resolve paths relative to
 `[info script]`, and include `sql/` when installing a package.
 
 ```tcl
@@ -12,8 +12,8 @@ set schema [file join [file dirname [info script]] sql schema.json]
 
 The loader uses `tjson 1.0.27` or newer. It never evaluates schema text as Tcl or
 accepts SQL expressions as defaults. See the runnable
-[example](../examples/07_json_schema.tcl) and its
-[schema](../examples/sql/users.json).
+[example](https://github.com/jerily/tpersist-examples/blob/main/07_json_schema.tcl) and its
+[schema](https://github.com/jerily/tpersist-examples/blob/main/sql/users.json).
 
 ## Format version 1
 

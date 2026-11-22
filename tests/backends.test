@@ -54,6 +54,14 @@ proc backendSchemaFile {table} {
 
 foreach dialect {postgresql mysql} {
     ::tcltest::testConstraint $dialect [info exists ::env(TPERSIST_TEST_[string toupper $dialect])]
+    test backend-config-$dialect {dictionary connections open the requested adapter in autocommit mode} -constraints $dialect -body {
+        set name [expr {$dialect eq "postgresql" ? "postgres" : $dialect}]
+        set db [db_connect_config [dict create db_dialect $name $dialect $::env(TPERSIST_TEST_[string toupper $dialect])]]
+        try {
+            list [db_dialect $db] [dict get [lindex [::tpersist::_raw $db {SELECT 1 AS value}] 0] value] \
+                [dict get [::tpersist::_connection $db] autobegin]
+        } finally {db_disconnect $db}
+    } -result [list $dialect 1 0]
     test backend-json-additions-$dialect {missing columns and indexes are added once without changing existing data} -constraints $dialect -setup {
         lassign [backendSetup $dialect] db table
         set filename [backendSchemaFile $table]
