@@ -4,7 +4,7 @@ package require tcltest 2
 package require tpersist
 namespace import ::tcltest::test
 namespace import ::tpersist::db_*
-::tcltest::testConstraint jsonlSqlite [expr {![catch {package require tdbc::sqlite3}]}]
+::tcltest::testConstraint jsonlSqlite [expr {![catch {package require tpersist-sqlite}]}]
 ::tcltest::testConstraint jsonlPostgres [info exists ::env(TPERSIST_TEST_POSTGRESQL)]
 
 proc jsonlSetup {dialect} {

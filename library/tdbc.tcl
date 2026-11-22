@@ -24,6 +24,7 @@ proc ::tpersist::_connection {handle} {
 
 # Validate the requested database dialect.
 proc ::tpersist::_dialect {dialect} {
+    if {$dialect eq "postgres"} {return postgresql}
     if {$dialect ni {sqlite postgresql mysql}} {
         _fail DIALECT "dialect must be sqlite, postgresql, or mysql"
     }
@@ -39,10 +40,24 @@ proc ::tpersist::_quote {name dialect} {
     return $q[string map [list $q $q$q] $name]$q
 }
 
+# Load the adapter before calling its public connection interface.
+proc ::tpersist::_adapter {dialect} {
+    if {[catch {package require tpersist-$dialect 0.1.8} message]} {
+        return -code error -errorcode [list TPERSIST DRIVER $dialect] "cannot load tpersist-$dialect: $message"
+    }
+    return ::tpersist_$dialect
+}
+
+# Open an autocommit connection using the host's configuration dictionary.
+proc ::tpersist::db_connect_config {config} {
+    set dialect [_dialect [dict get $config db_dialect]]
+    set adapter [_adapter $dialect]
+    set options [${adapter}::connection_options $config]
+    return [_connect $dialect $adapter $options 0]
+}
+
 # Open and register a TDBC connection.
 proc ::tpersist::db_connect {args} {
-    variable connections
-    variable serial
     if {[llength $args] % 2} { _fail ARGS "connection options must be name/value pairs" }
     set dialect sqlite
     set autobegin 1
@@ -59,33 +74,22 @@ proc ::tpersist::db_connect {args} {
             default { lappend options $key $val }
         }
     }
-    set driver [dict get {sqlite sqlite3 postgresql postgres mysql mysql} $dialect]
-    if {[catch {package require tdbc::$driver} result optionsDict]} {
-        return -code error -errorcode [list TPERSIST DRIVER $driver] \
-            "cannot load tdbc::$driver: $result"
-    }
-    if {$dialect eq "sqlite"} {
-        if {$database eq {}} { _fail ARGS "SQLite requires -database (use :memory: for an in-memory database)" }
-        set command [::tdbc::sqlite3::connection new $database {*}$options]
-    } else {
-        set normalized {}
-        foreach {key val} $options {
-            if {$dialect eq "mysql" && $key eq "-password"} { set key -passwd }
-            lappend normalized $key $val
-        }
-        if {$database ne {}} { lappend normalized -database $database }
-        set command [::tdbc::${driver}::connection new {*}$normalized]
+    if {$database ne {}} {lappend options -database $database}
+    return [_connect $dialect [_adapter $dialect] $options $autobegin]
+}
+
+# The adapter owns driver setup. The core owns the connection after connect returns.
+proc ::tpersist::_connect {dialect adapter options autobegin} {
+    variable connections
+    variable serial
+    try {
+        set command [${adapter}::connect $options]
+    } trap {TCL WRONGARGS} {message opts} {
+        _fail ARGS $message
     }
     set handle tpersist:db[incr serial]
     dict set connections $handle [dict create command $command dialect $dialect \
         transaction 0 savepoints {} autobegin $autobegin]
-    try {
-        if {$dialect eq "sqlite"} { _raw $handle {PRAGMA foreign_keys = ON} }
-    } on error {message opts} {
-        catch {$command close}
-        dict unset connections $handle
-        return -options $opts $message
-    }
     return $handle
 }
 

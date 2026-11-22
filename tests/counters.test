@@ -24,7 +24,7 @@ proc counterSetup {dialect} {
 
 foreach dialect {sqlite postgresql mysql} {
     ::tcltest::testConstraint counter_$dialect [expr {$dialect eq "sqlite" ?
-        ![catch {package require tdbc::sqlite3}] : [info exists ::env(TPERSIST_TEST_[string toupper $dialect])]}]
+        ![catch {package require tpersist-sqlite}] : [info exists ::env(TPERSIST_TEST_[string toupper $dialect])]}]
     test counter-$dialect {atomic increments return their own values, isolate keys, and retain initial values} -constraints counter_$dialect -setup {
         lassign [counterSetup $dialect] db table
     } -body {

@@ -216,6 +216,9 @@ empty INSERT syntax, schema types, generated keys, and RETURNING availability.
 ## Connections and results
 
 ```tcl
+db_connect_config {db_dialect sqlite sqlite_path app.sqlite}
+db_connect_config {db_dialect postgres postgresql {-host localhost -database app -user app}}
+db_connect_config {db_dialect mysql mysql {-host localhost -database app -user app}}
 db_connect -database app.sqlite ?-autobegin boolean? ?driverOptions...?
 db_connect -dialect postgresql -database app ?driverOptions...?
 db_connect -dialect mysql -database app ?driverOptions...?
@@ -224,9 +227,17 @@ db_execute connection statement ?-params dictionary? ?-nulls names?
 db_foreach_row connection rowVariable statement ?-params dictionary? ?-nulls names? script
 ```
 
-The driver packages are `tdbc::sqlite3`, `tdbc::postgres`, and `tdbc::mysql`.
-They are loaded on connection creation. Build-time database libraries are not
-required by tpersist. Driver options such as `-host`, `-port`, `-user`,
+The dictionary API opens an autocommit connection and accepts `postgres` or
+`postgresql` for the PostgreSQL adapter. The option-based API retains its
+`-autobegin true` default. Both return the same kind of connection handle.
+
+Opening a connection loads `tpersist-sqlite`, `tpersist-postgresql`, or
+`tpersist-mysql`. Each package exports `connection_options config` and `connect options` in its own namespace
+(`::tpersist_sqlite`, `::tpersist_postgresql`, or `::tpersist_mysql`). The first command reads its settings from the supplied configuration dictionary.
+The second takes those driver options and returns an open TDBC connection owned by the caller. The adapter can also be used directly. When called through the core,
+`tpersist` wraps that connection and closes it on `db_disconnect`.
+
+Driver options such as `-host`, `-port`, `-user`,
 `-password`, `-timeout`, and `-isolation` are forwarded; support depends on the
 driver. `-password` is translated to MySQL's `-passwd`. SQLite requires a
 filename or `:memory:` and enables foreign-key enforcement on connection.

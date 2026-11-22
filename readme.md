@@ -25,11 +25,12 @@ ctest --test-dir build --output-on-failure
 cmake --install build
 ```
 
-Database execution requires the corresponding `tdbc::sqlite3`,
-`tdbc::postgres`, or `tdbc::mysql` package. SQLite is the default dialect.
+For database connections, add the adapter your application uses to its ttrek dependencies:
+`tpersist-sqlite`, `tpersist-postgresql`, or `tpersist-mysql`. Each adapter supplies its
+TDBC driver. Building and compiling SQL needs only the core package.
 JSON schema loading requires `tjson 1.0.27` or newer. JSONL backup and import require `tjson 1.0.30` or newer. Both load tjson on first use.
 
-- [Runnable examples](examples/readme.md)
+- [Runnable examples](https://github.com/jerily/tpersist-examples)
 - [API reference](docs/api.md)
 - [Versioned JSON schemas](docs/schema-json.md)
 - [JSONL schema and data backups](docs/jsonl.md)

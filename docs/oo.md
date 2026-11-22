@@ -72,4 +72,4 @@ use `db_execute $connection [$query statement]` or wrap its dictionary through a
 Database. A failed composition leaves the prior statement unchanged. All driver,
 NULL, typing, dialect, and transaction behavior comes from the procedural layer.
 
-See [the complete example](../examples/06_optional_oo.tcl).
+See [the complete example](https://github.com/jerily/tpersist-examples/blob/main/06_optional_oo.tcl).

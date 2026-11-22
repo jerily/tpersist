@@ -81,7 +81,7 @@ foreach fixture {malformed trailing} {
     } -result {TPERSIST JSON}
 }
 
-::tcltest::testConstraint schemaSqlite [expr {![catch {package require tdbc::sqlite3}]}]
+::tcltest::testConstraint schemaSqlite [expr {![catch {package require tpersist-sqlite}]}]
 
 test schema-json-apply {repeat application preserves data and creates missing indexes on existing tables} -constraints schemaSqlite -setup {
     set db [db_connect -database :memory: -autobegin 0]
