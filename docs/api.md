@@ -350,7 +350,11 @@ Each column specification is a dictionary with required `type`. Supported schema
 types are `integer`, `bigint`, `real`, `double`, `text`, `varchar`, `blob`,
 `binary`, `boolean`, `decimal`, `date`, and `timestamp`.
 
-Optional fields are `primary_key`, `not_null`, `unique`, `auto_increment`,
+A column’s optional `check` is a SQL-style predicate string, for example
+`level {type integer check {level IN (1, 2, 3)}}`. Only references to the declared
+column and literals can be used as operands. MySQL enforcement requires 8.0.16+.
+
+Other optional fields are `primary_key`, `not_null`, `unique`, `auto_increment`,
 `default`, `length`, `precision`, and `scale`. Flags are booleans. VARCHAR requires
 a positive `length`. DECIMAL accepts precision 1–65 and a scale no greater than
 precision. Defaults must be literal `db_value` or `db_null` expressions; binary

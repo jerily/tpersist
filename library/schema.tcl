@@ -55,7 +55,7 @@ proc ::tpersist::_validateTable {definition} {
     set pk {}
     dict for {name spec} $columns {
         _quote $name sqlite
-        _fields $spec {type length precision scale primary_key not_null unique auto_increment default}
+        _fields $spec {type length precision scale primary_key not_null unique auto_increment default check}
         set type [dict get $spec type]
         if {$type ni {integer bigint real double text varchar blob binary boolean decimal date timestamp}} {
             _fail TYPE "unsupported column type: $type"
@@ -82,6 +82,9 @@ proc ::tpersist::_validateTable {definition} {
         }
         if {[dict exists $spec scale] && (![dict exists $spec precision] || [dict get $spec scale] > [dict get $spec precision])} {
             _fail VALIDATION "decimal scale requires precision and must not exceed it"
+        }
+        if {[dict exists $spec check]} {
+            _checkSql [db_expr [dict get $spec check]] $name sqlite
         }
         if {[_flag $spec auto_increment]} {
             if {$type ni {integer bigint} || ![_flag $spec primary_key] || [dict exists $spec default]} {
@@ -184,6 +187,50 @@ proc ::tpersist::_defaultSql {node dialect} {
     }
 }
 
+# CHECK expressions use the expression parser for syntax and the DDL literal
+# encoder for values. A column check can reference only its own column.
+proc ::tpersist::_checkOperand {node column dialect} {
+    switch -- [dict get $node node] {
+        col {
+            if {[dict exists $node table] || [dict get $node name] ne $column} {
+                _fail VALIDATION "a column check may reference only $column"
+            }
+            return [_quote $column $dialect]
+        }
+        value - null {return [_defaultSql $node $dialect]}
+        default {_fail VALIDATION "expected a column or literal in check expression"}
+    }
+}
+
+proc ::tpersist::_checkSql {node column dialect} {
+    set kind [dict get $node node]
+    switch -- $kind {
+        eq - ne - lt - le - gt - ge {
+            set op [dict get {eq = ne <> lt < le <= gt > ge >=} $kind]
+            set left [_checkOperand [dict get $node left] $column $dialect]
+            set right [_checkOperand [dict get $node right] $column $dialect]
+            return "($left $op $right)"
+        }
+        and - or {
+            set terms [lmap term [dict get $node items] {_checkSql $term $column $dialect}]
+            return "([join $terms " [string toupper $kind] "])"
+        }
+        not {return "(NOT [_checkSql [dict get $node expr] $column $dialect])"}
+        is_null - is_not_null {
+            set op [expr {$kind eq "is_null" ? "IS NULL" : "IS NOT NULL"}]
+            return "([_checkOperand [dict get $node expr] $column $dialect] $op)"
+        }
+        in - not_in {
+            set op [expr {$kind eq "in" ? "IN" : "NOT IN"}]
+            set left [_checkOperand [dict get $node expr] $column $dialect]
+            set items [lmap term [dict get $node items] {_checkOperand $term $column $dialect}]
+            if {![llength $items]} {_fail VALIDATION "a check membership list must not be empty"}
+            return "($left $op ([join $items {, }]))"
+        }
+        default {_fail VALIDATION "unsupported predicate in column check"}
+    }
+}
+
 # Compile a validated column for CREATE TABLE or ADD COLUMN.
 proc ::tpersist::_columnSql {name spec dialect} {
     set type [dict get $spec type]
@@ -215,6 +262,12 @@ proc ::tpersist::_columnSql {name spec dialect} {
     if {[_flag $spec not_null]} { append sql { NOT NULL} }
     if {[_flag $spec unique]} { append sql { UNIQUE} }
     if {[dict exists $spec default]} { append sql " DEFAULT [_defaultSql [dict get $spec default] $dialect]" }
+    if {[dict exists $spec check]} {
+        if {$dialect eq "mysql" && [_flag $spec auto_increment]} {
+            _fail UNSUPPORTED "MySQL does not allow a check on an auto-increment column"
+        }
+        append sql " CHECK [_checkSql [db_expr [dict get $spec check]] $name $dialect]"
+    }
     return $sql
 }
 

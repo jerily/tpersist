@@ -123,7 +123,7 @@ proc ::tpersist::_schemaFromNode {root} {
         set columns {}
         dict for {column specNode} [_schemaNode [dict get $table columns] object $path.columns] {
             set cp "$path.columns.$column"
-            set spec [_schemaFields $specNode {type length precision scale primary_key not_null unique auto_increment default} type $cp]
+            set spec [_schemaFields $specNode {type length precision scale primary_key not_null unique auto_increment default check} type $cp]
             set type [_schemaNode [dict get $spec type] string $cp.type]
             set converted [dict create type $type]
             dict for {field node} $spec {
@@ -136,6 +136,7 @@ proc ::tpersist::_schemaFromNode {root} {
                         set value [_schemaNode $node number $cp.$field]
                         if {![regexp {^(0|[1-9][0-9]*)$} $value]} { _fail SCHEMA "$cp.$field requires a nonnegative integer" }
                     }
+                    check { set value [_schemaNode $node string $cp.check] }
                     default { set value [_schemaDefault $node $type $cp.default] }
                 }
                 dict set converted $field $value

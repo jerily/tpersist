@@ -52,6 +52,11 @@ foreach {label script pattern} {
     unknown-type {db_define_table users {id {type raw}}} {*unsupported column type*}
     empty-columns {db_define_table users {}} {*at least one column*}
     empty-name {db_define_table {} {id {type integer}}} {*nonempty*}
+    check-other-column {db_define_table samples {a {type integer} b {type integer check {a > 0}}}} {*only b*}
+    check-parameter {db_define_table samples {v {type integer check {v > :limit}}}} {*column or literal*}
+    check-function {db_define_table samples {v {type integer check {SUM(v) > 0}}}} {*column or literal*}
+    check-empty-list {db_define_table samples {v {type integer check {v IN ()}}}} {*must not be empty*}
+    check-script {db_define_table samples {v {type integer check {v > 0; SELECT 1}}}} {*parse error*}
     bad-length {db_define_table users {name {type varchar length {2); DROP}}}} {*length must*}
     missing-length {db_define_table users {name {type varchar}}} {*positive length*}
     bad-scale {db_define_table prices {price {type decimal precision 4 scale 5}}} {*scale*}
