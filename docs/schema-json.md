@@ -56,6 +56,17 @@ Column specifications use the [DDL API's types and options](api.md#schema-defini
 `type` is required. Flags (`primary_key`, `not_null`, `unique`, `auto_increment`)
 are JSON booleans; `length`, `precision`, and `scale` are integer numbers.
 
+A column can declare a `check` string. For example, a temperature reading can use
+`{"type":"integer","check":"reading >= -50 AND reading <= 150"}`. The expression
+parser accepts comparisons, `AND`, `OR`, `NOT`, `IN` / `NOT IN`, and
+`IS NULL` / `IS NOT NULL` on the column and literal values. The DDL compiler
+quotes identifiers and literals for the selected dialect. A nullable column can
+satisfy a check with SQL UNKNOWN; use `not_null` to require a value.
+
+SQLite, PostgreSQL and MySQL 8.0.16 or later enforce checks. A check on a newly
+added column is included in its DDL. Changing a check on an existing column
+requires a migration. JSONL export currently excludes tables with checks.
+
 A foreign key has `columns`, `table`, and `referenced_columns`; optional
 `on_delete` and `on_update` use the existing DDL action names. Its `table` may be
 a string or `{"name": "users", "schema": "public"}`. List referenced tables

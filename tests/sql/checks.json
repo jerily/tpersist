@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "tables": [{
+    "name": "samples",
+    "columns": {
+      "reading": {"type": "integer", "not_null": true, "check": "reading >= -50 AND reading <= 150"},
+      "label": {"type": "varchar", "length": 24, "check": "label IN ('normal', 'operator''s pick')"}
+    }
+  }]
+}

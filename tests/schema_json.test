@@ -24,6 +24,17 @@ test schema-json-read {UTF-8 file compiles to reusable table and index definitio
 } -result [list 1 \
     {CREATE TABLE "members" ("team_id" INTEGER NOT NULL, "id" INTEGER NOT NULL, "name" VARCHAR(80) DEFAULT 'O''Brien', "active" BOOLEAN DEFAULT TRUE, "note" TEXT DEFAULT NULL, PRIMARY KEY ("team_id", "id"), UNIQUE ("team_id", "name"), FOREIGN KEY ("team_id") REFERENCES "teams" ("id") ON DELETE CASCADE)} id 1]
 
+test schema-json-check-ddl {compile parsed numeric and quoted text predicates in each dialect} -body {
+    set def [lindex [dict get [db_read_schema [::schemajson::path checks]] tables] 0]
+    lmap dialect {sqlite postgresql mysql} {
+        set ddl [db_schema_sql $def -dialect $dialect]
+        set quote [expr {$dialect eq "mysql" ? "`" : "\""}]
+        set prefix [expr {$dialect eq "postgresql" ? "E" : ""}]
+        list [expr {[string first "CHECK ((${quote}reading${quote} >= -50) AND (${quote}reading${quote} <= 150))" $ddl] >= 0}] \
+            [expr {[string first "CHECK (${quote}label${quote} IN (${prefix}'normal', ${prefix}'operator''s pick'))" $ddl] >= 0}]
+    }
+} -result {{1 1} {1 1} {1 1}}
+
 test schema-json-defaults {exact numeric strings, false, NULL and empty strings remain distinct} -body {
     set doc [db_read_schema [::schemajson::path defaults]]
     set table [lindex [dict get $doc tables] 0]
@@ -82,6 +93,18 @@ foreach fixture {malformed trailing} {
 }
 
 ::tcltest::testConstraint schemaSqlite [expr {![catch {package require tpersist-sqlite}]}]
+
+test schema-json-check-enforced {SQLite enforces JSON column checks on inserts and updates} -constraints schemaSqlite -setup {
+    set db [db_connect -database :memory: -autobegin 0]
+    db_apply_schema $db [::schemajson::path checks]
+} -body {
+    foreach value {-50 150} {
+        db_execute $db [db_values [db_insert samples] [list reading $value label "operator's pick"]]
+    }
+    set insert [catch {db_execute $db [db_values [db_insert samples] {reading -51}]}]
+    set update [catch {db_execute $db [db_values [db_update samples] {label outlier}]}]
+    list $insert $update [llength [dict get [db_execute $db [db_select samples]] rows]]
+} -cleanup {db_disconnect $db} -result {1 1 2}
 
 test schema-json-apply {repeat application preserves data and creates missing indexes on existing tables} -constraints schemaSqlite -setup {
     set db [db_connect -database :memory: -autobegin 0]
