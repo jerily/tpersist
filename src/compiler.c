@@ -87,17 +87,8 @@ static Tcl_Obj *physicalName(TpContext *c, Tcl_Obj *prefix, Tcl_Obj *name, const
     int tooLong = 0;
     if (!strcmp(dialect, "postgresql")) {
         TpSize bytes;
-        const char *value = Tcl_GetStringFromObj(result, &bytes);
-        if (bytes > 63) {
-            /* Tcl 8.6 can store supplementary characters as surrogate pairs. */
-            Tcl_Encoding utf8 = Tcl_GetEncoding(c->interp, "utf-8");
-            if (!utf8) return NULL;
-            Tcl_DString encoded;
-            Tcl_UtfToExternalDString(utf8, value, bytes, &encoded);
-            tooLong = Tcl_DStringLength(&encoded) > 63;
-            Tcl_DStringFree(&encoded);
-            Tcl_FreeEncoding(utf8);
-        }
+        Tcl_GetStringFromObj(result, &bytes);
+        tooLong = bytes > 63;
     } else if (!strcmp(dialect, "mysql")) {
         tooLong = Tcl_GetCharLength(result) > 64;
     }

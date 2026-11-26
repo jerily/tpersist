@@ -35,12 +35,12 @@ test prefix-validation {ambiguous separators, invalid tokens, NUL and backend id
     set result
 } -result [concat [lrepeat 6 {TPERSIST VALIDATION}] {0 {TPERSIST VALIDATION} 0 {TPERSIST VALIDATION}}]
 
-test prefix-unicode {PostgreSQL counts the UTF-8 bytes of supplementary characters} -body {
-    set character [encoding convertfrom utf-8 [binary decode hex f09f8c8d]]
-    set name [string repeat $character 15]
+test prefix-unicode {PostgreSQL limits encoded bytes and MySQL limits characters} -body {
+    set name [string repeat é 30]
     list [catch {db_compile [db_select $name] -prefix a -dialect postgresql}] \
-        [catch {db_compile [db_select ${name}x] -prefix a -dialect postgresql}]
-} -result {0 1}
+        [catch {db_compile [db_select ${name}x] -prefix a -dialect postgresql}] \
+        [catch {db_compile [db_select ${name}x] -prefix a -dialect mysql}]
+} -result {0 1 0}
 
 foreach dialect {sqlite postgresql mysql} {
     ::tcltest::testConstraint prefix_$dialect [expr {$dialect eq "sqlite" ?
