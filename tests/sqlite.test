@@ -328,6 +328,22 @@ test sqlite-3.6 {interpreter deletion cleans up owned connections} -constraints 
     expr {![interp exists child]}
 } -cleanup {if {[interp exists child]} {interp delete child}} -result 1
 
+test sqlite-select-sources {correlated scalar lookup and guarded INSERT SELECT with UPSERT} -constraints sqlite -body {
+    set db [fresh]
+    populate $db
+    db_create_table $db [db_define_table labels {id {type integer primary_key 1} label {type text}}]
+    set inner [db_select [db_table users -as u] -columns name]
+    set inner [db_where $inner -expr {u.id=p.id}]
+    set source [db_select [db_table users -as p] -columns [list id [db_scalar $inner]]]
+    set copy [db_insert_select [db_insert labels] {id label} $source]
+    db_execute $db $copy
+    db_execute $db [db_on_conflict $copy id {}]
+    set filtered [db_where $source -expr {p.id=:id}]
+    db_execute $db [db_insert_select [db_insert labels] {id label} $filtered] -params {id 99}
+    set query [db_order_by [db_select labels -columns label] label]
+    lmap row [dict get [db_execute $db $query] rows] {dict get $row label}
+} -cleanup {db_disconnect $db} -result {Alice Bob Carol}
+
 rename fresh {}
 rename populate {}
 rename names {}

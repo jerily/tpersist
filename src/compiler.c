@@ -276,6 +276,28 @@ static int bind(Compiler *p,Tcl_Obj *value,Tcl_Obj *name,const char *type,int nu
 #define ORDERING TP_ORDERING
 #define STAR TP_STAR
 static int expression(Compiler *p,Tcl_Obj *d,int flags);
+static int statement(Compiler *p,Tcl_Obj *d,int ensureWhere);
+
+/* Compile into the enclosing statement so parameters share one binding namespace. */
+static int selectSource(Compiler *p, Tcl_Obj *query, TpSize width, int ensureWhere) {
+    Tcl_Obj *kind = required(p, query, "kind");
+    if (!kind || strcmp(Tcl_GetString(kind), "select"))
+        return TpError(&p->c, "VALIDATION", "expected a SELECT statement");
+    Tcl_Obj *columns = required(p, query, "columns");
+    if (!columns) return TCL_ERROR;
+    TpSize count;
+    Tcl_Obj **items;
+    TRY(Tcl_ListObjGetElements(p->c.interp, columns, &count, &items));
+    if (count != width) return TpError(&p->c, "VALIDATION", "SELECT projection width does not match");
+    for (TpSize i = 0; i < count; i++) {
+        Tcl_Obj *node = required(p, items[i], "node");
+        if (!node) return TCL_ERROR;
+        if (!strcmp(Tcl_GetString(node), "star"))
+            return TpError(&p->c, "VALIDATION", "SELECT source requires explicit projections");
+    }
+    return statement(p, query, ensureWhere);
+}
+
 static int exprBody(Compiler *p,Tcl_Obj *d,int flags) {
     Tcl_Obj *o=required(p,d,"node"); if(!o) return TCL_ERROR;
     const char *node=Tcl_GetString(o);
@@ -299,6 +321,16 @@ static int exprBody(Compiler *p,Tcl_Obj *d,int flags) {
         Tcl_Obj *value=required(p,d,named?"name":"value"), *type=required(p,d,"type");
         if(!value || !type) return TCL_ERROR;
         return bind(p,named?NULL:value,named?value:NULL,Tcl_GetString(type),1);
+    }
+    if (!strcmp(node, "scalar")) {
+        TRY(keys(p,d,"node select"));
+        if (p->writeTarget) return TpError(&p->c,"VALIDATION","scalar requires a SELECT expression");
+        Tcl_Obj *query = required(p,d,"select");
+        if (!query) return TCL_ERROR;
+        ADD("(");
+        TRY(selectSource(p,query,1,0));
+        ADD(")");
+        return TCL_OK;
     }
     if(!strcmp(node,"alias")) {
         TRY(keys(p,d,"node expr name"));
@@ -402,7 +434,7 @@ static int pagination(Compiler *p,Tcl_Obj *d) {
     return TCL_OK;
 }
 
-static int statement(Compiler *p,Tcl_Obj *d) {
+static int statement(Compiler *p,Tcl_Obj *d,int ensureWhere) {
     Tcl_Obj *version=required(p,d,"version"), *kind=required(p,d,"kind"), *source=required(p,d,"table");
     if(!version || !kind || !source) return TCL_ERROR;
     int ver; TRY(Tcl_GetIntFromObj(p->c.interp,version,&ver));
@@ -427,6 +459,13 @@ static int statement(Compiler *p,Tcl_Obj *d) {
                 TRY(table(p,src,1)); ADD(" ON "); TRY(expression(p,on,0));
             }
         }
+        /* SQLite needs a WHERE to distinguish UPSERT from a join condition. */
+        if (ensureWhere) {
+            Tcl_Obj *where = TpGet(&p->c,d,"where");
+            TpSize count = 0;
+            if (where) TRY(Tcl_ListObjLength(p->c.interp,where,&count));
+            if (!count) ADD(" WHERE 1");
+        }
         TRY(clause(p,d,"where"," WHERE "," AND ",0,0));
         TRY(clause(p,d,"group_by"," GROUP BY ",", ",0,0));
         TRY(clause(p,d,"having"," HAVING "," AND ",0,0));
@@ -435,10 +474,30 @@ static int statement(Compiler *p,Tcl_Obj *d) {
     }
     int insert=!strcmp(k,"insert"), update=!strcmp(k,"update"), del=!strcmp(k,"delete");
     if(!insert && !update && !del) return TpError(&p->c,"VALIDATION","unknown statement kind");
-    TRY(keys(p,d,insert?"version kind table values returning on_conflict":update?"version kind table values where returning":"version kind table where returning"));
+    TRY(keys(p,d,insert?"version kind table values returning on_conflict insert_select":update?"version kind table values where returning":"version kind table where returning"));
     ADD(insert?"INSERT INTO ":update?"UPDATE ":"DELETE FROM "); TRY(table(p,source,0));
     p->writeTarget = TpGet(&p->c, source, "name");
-    if(!del) {
+    Tcl_Obj *from = TpGet(&p->c,d,"insert_select");
+    if (from) {
+        TRY(keys(p,from,"columns select"));
+        if (TpGet(&p->c,d,"values")) return TpError(&p->c,"VALIDATION","insert_select conflicts with values");
+        Tcl_Obj *columns = required(p,from,"columns"), *query = required(p,from,"select");
+        if (!columns || !query) return TCL_ERROR;
+        TpSize count;
+        Tcl_Obj **items;
+        TRY(Tcl_ListObjGetElements(p->c.interp,columns,&count,&items));
+        if (!count) return TpError(&p->c,"VALIDATION","insert_select requires target columns");
+        ADD(" (");
+        for (TpSize i = 0; i < count; i++) {
+            if (i) ADD(", ");
+            TRY(identifier(p,items[i]));
+        }
+        ADD(") ");
+        p->writeTarget = NULL;
+        int upsert = !strcmp(p->dialect,"sqlite") && TpGet(&p->c,d,"on_conflict");
+        TRY(selectSource(p,query,count,upsert));
+        p->writeTarget = TpGet(&p->c,source,"name");
+    } else if(!del) {
         Tcl_Obj *values=TpGet(&p->c,d,"values"); if(!values) values=TpDict(&p->c);
         TpSize n; TRY(Tcl_DictObjSize(p->c.interp,values,&n));
         if(!n) {
@@ -534,7 +593,7 @@ int TpCompileCmd(ClientData unused,Tcl_Interp *interp,int objc,Tcl_Obj *const ob
     if(strcmp(p.dialect,"sqlite") && strcmp(p.dialect,"postgresql") && strcmp(p.dialect,"mysql")) {
         TpError(&p.c,"DIALECT","dialect must be sqlite, postgresql, or mysql"); goto done;
     }
-    if(statement(&p,objv[1])!=TCL_OK) goto done;
+    if(statement(&p,objv[1],0)!=TCL_OK) goto done;
     /* Catch misspelled bindings; explicit NULL must not also have a value. */
     Tcl_Obj *sets[]={p.bindings,p.nullNames};
     for(int i=0;i<2;i++) {

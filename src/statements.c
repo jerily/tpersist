@@ -114,6 +114,10 @@ static int build(TpContext *c, const char *cmd, int objc, Tcl_Obj *const v[], Tc
     } else if (!strcmp(cmd,"count")) {
         ARGS(1,2,"?expression?"); d=TpNode(c,cmd);
         TpPut(c,d,"expr",objc==2?v[1]:TpNode(c,"star"));
+    } else if (!strcmp(cmd,"scalar")) {
+        ARGS(2,2,"selectStatement");
+        d=TpNode(c,"scalar");
+        TpPut(c,d,"select",v[1]);
     } else if (!strcmp(cmd,"alias")) {
         ARGS(3,3,"expression name"); d=TpNode(c,cmd);
         TpPut(c,d,"expr",v[1]); TpPut(c,d,"name",v[2]);
@@ -167,7 +171,17 @@ static int build(TpContext *c, const char *cmd, int objc, Tcl_Obj *const v[], Tc
                 if(n<0) return TpError(c,"VALIDATION","limit and offset must be nonnegative integers");
                 TpPut(c,d,cmd,TpInt(c,n));
             }
+        } else if (!strcmp(cmd,"insert_select")) {
+            ARGS(4,4,"insertStatement columnList selectStatement");
+            if (strcmp(k,"insert") || TpGet(c,d,"values"))
+                return TpError(c,"VALIDATION","insert_select requires an insert without values");
+            Tcl_Obj *from = TpDict(c);
+            TpPut(c,from,"columns",v[2]);
+            TpPut(c,from,"select",v[3]);
+            TpPut(c,d,"insert_select",from);
         } else if (!strcmp(cmd,"values")) {
+            if (TpGet(c,d,"insert_select"))
+                return TpError(c,"VALIDATION","values cannot be combined with insert_select");
             ARGS(3,4,"statement dictionary ?-expressions?");
             if (!contains("insert update",k)) return TpError(c,"VALIDATION","values requires insert or update");
             if(objc==4 && strcmp(OPT(3),"-expressions")) return TpError(c,"ARGS","expected -expressions");
@@ -212,7 +226,7 @@ static int build(TpContext *c, const char *cmd, int objc, Tcl_Obj *const v[], Tc
             TpPut(c,d,"joins",items);
         } else if (!strcmp(cmd,"clear")) {
             ARGS(3,3,"statement clause");
-            if(!contains("where having order_by group_by returning limit offset distinct values joins on_conflict",OPT(2)))
+            if(!contains("where having order_by group_by returning limit offset distinct values insert_select joins on_conflict",OPT(2)))
                 return TpError(c,"ARGS","unknown clause to clear");
             Tcl_DictObjRemove(NULL,d,v[2]);
         } else return TpError(c,"ARGS","unknown builder command");

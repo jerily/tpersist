@@ -24,7 +24,7 @@ int Tpersist_Init(Tcl_Interp *interp) {
         "in","not_in","and","or","not","is_null","is_not_null","asc","desc",
         "sum","avg","min","max","count","alias","select","insert","update","delete","on_conflict",
         "where","having","order_by","group_by","returning","limit","offset","distinct",
-        "values","join","clear",NULL};
+        "values","scalar","insert_select","join","clear",NULL};
     for(int i=0;commands[i];i++) {
         char name[80]; snprintf(name,sizeof(name),"::tpersist::db_%s",commands[i]);
         Tcl_CreateObjCommand(interp,name,TpBuilderCmd,(ClientData)commands[i],NULL);

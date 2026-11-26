@@ -159,8 +159,23 @@ set update [db_values [db_update users] [dict create \
 
 Repeated assignment keys replace their earlier values. Supported `db_clear`
 clauses are `where`, `having`, `order_by`, `group_by`, `returning`, `limit`,
-`offset`, `distinct`, `values`, `joins`, and `on_conflict`. Removing a filter from UPDATE or
+`offset`, `distinct`, `values`, `insert_select`, `joins`, and `on_conflict`. Removing a filter from UPDATE or
 DELETE allows all rows to be affected, following ordinary SQL semantics.
+
+Use `db_scalar selectStatement` inside a SELECT expression. Its source must
+project one explicit column. Qualify outer references using table aliases.
+Use `db_insert_select insertStatement targetColumns selectStatement` to copy
+rows in one statement. List the target identifiers and the same number of
+explicit source expressions in matching order. Both forms share the enclosing
+statement's dialect, table prefix and parameter bindings.
+
+```tcl
+set latest [db_select prices -columns amount]
+set latest [db_where $latest -expr {item_id=i.id}]
+set latest [db_limit [db_order_by $latest -expr {effective_at DESC}] 1]
+set source [db_select [db_table items -as i] -columns [list id [db_alias [db_scalar $latest] price]]]
+set copy [db_insert_select [db_insert price_snapshot] {item_id price} $source]
+```
 
 ## Compilation and parameters
 
@@ -431,7 +446,7 @@ native codes. Database errors retain the driver's error code and SQLSTATE when
 provided; some driver errors use `NONE`.
 
 This release has no ORM tracking, relationship loading, migration generation,
-connection pool, raw SQL API, CTEs, window functions, subqueries, or
+connection pool, raw SQL API, CTEs, window functions, or
 table aliases on write statements. RETURNING requires SQLite 3.35+ or PostgreSQL
 and is rejected for MySQL. Backend capabilities and type semantics remain those
 of the actual database and installed TDBC driver.

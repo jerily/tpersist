@@ -225,4 +225,29 @@ test compile-6.2 {repeated decimal parameters share a binding and each occurrenc
         [dict get $null params] [dict get $null required] [dict get $null sql]
 } -result {x {SELECT (CAST(:p1 AS DECIMAL(65,2)) + CAST(:p1 AS DECIMAL(65,2))) FROM `numbers`} {p1 1.25} {} {} {SELECT (CAST(:p1 AS DECIMAL(65,30)) + CAST(:p1 AS DECIMAL(65,30))) FROM `numbers`}}
 
+test select-source-bindings {inner and outer clauses share named parameters in all dialects} -body {
+    set inner [db_where [db_select tags -columns label] -expr {parent_id=p.id AND owner=:owner}]
+    set source [db_select [db_table parents -as p] -columns [list id [db_alias [db_scalar $inner] label]]]
+    set source [db_where $source -expr {owner=:owner}]
+    set copy [db_insert_select [db_insert labels] {id label} $source]
+    foreach dialect {sqlite postgresql mysql} {
+        set compiled [db_compile $copy -dialect $dialect -prefix app -params {owner example}]
+        set sql [dict get $compiled sql]
+        lappend result [list [dict get $compiled params] [regexp -all {:p1} $sql] [regexp -all {app__} $sql]]
+    }
+    set result
+} -setup {set result {}} -result {{{p1 example} 2 3} {{p1 example} 2 3} {{p1 example} 2 3}}
+
+test select-source-invalid {reject malformed statements, unknown widths and conflicting sources} -body {
+    set values [db_values [db_insert dest] {a 1}]
+    set copy [db_insert_select [db_insert dest] a [db_select src -columns a]]
+    foreach invalid [list [dict merge $copy [dict create values {}]] \
+            [db_insert_select [db_insert dest] {a b} [db_select src -columns a]] \
+            [db_insert_select [db_insert dest] a [db_delete src]] \
+            [db_select dest -columns [list [db_scalar [db_select src]]]]] {
+        lappend errors [catch {db_compile $invalid}]
+    }
+    list $errors [catch {db_values $copy {a 1}}] [catch {db_insert_select $values a [db_select src -columns a]}]
+} -setup {set errors {}} -result {{1 1 1 1} 1 1}
+
 ::tcltest::cleanupTests
