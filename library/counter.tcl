@@ -2,6 +2,7 @@
 # Atomic, tenant/key-scoped counters. The selected key columns must have a
 # UNIQUE or PRIMARY KEY constraint; the counter must be a non-null integer.
 proc ::tpersist::db_increment {handle table keys column args} {
+    set prefix [_takePrefix args]
     set options [dict create -initial {} -types {}]
     if {[llength $args] % 2} {_fail ARGS "expected option/value pairs"}
     foreach {key value} $args {
@@ -24,6 +25,9 @@ proc ::tpersist::db_increment {handle table keys column args} {
     }
     foreach name [dict keys $types] {
         if {![dict exists $values $name]} {_fail VALIDATION "counter type names an unknown column"}
+    }
+    if {$prefix ne {}} {
+        set table [_prefixedTable $table [db_dialect $handle] $prefix]
     }
     set insert [db_values [db_insert $table] $values -expressions]
     set change [dict create $column [db_add \

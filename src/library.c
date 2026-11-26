@@ -29,6 +29,7 @@ int Tpersist_Init(Tcl_Interp *interp) {
         char name[80]; snprintf(name,sizeof(name),"::tpersist::db_%s",commands[i]);
         Tcl_CreateObjCommand(interp,name,TpBuilderCmd,(ClientData)commands[i],NULL);
     }
+    Tcl_CreateObjCommand(interp,"::tpersist::_prefixName",TpPrefixNameCmd,NULL,NULL);
     Tcl_CreateObjCommand(interp,"::tpersist::db_compile",TpCompileCmd,NULL,NULL);
     Tcl_CreateObjCommand(interp,"::tpersist::db_expr",TpExprCmd,NULL,NULL);
     if(Tcl_EvalEx(interp,tpersist_script,-1,TCL_EVAL_GLOBAL)!=TCL_OK) {

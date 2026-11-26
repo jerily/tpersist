@@ -139,6 +139,40 @@ proc ::tpersist::_tableParts {table} {
     return [dict create node table name $table]
 }
 
+# Extract the optional prefix while leaving command-specific options for their parser.
+proc ::tpersist::_takePrefix {optionsVar} {
+    upvar 1 $optionsVar options
+    if {[llength $options] % 2} { _fail ARGS "expected option/value pairs" }
+    set remaining {}
+    set prefix {}
+    foreach {key value} $options {
+        if {$key eq "-prefix"} {
+            set prefix $value
+        } else {
+            lappend remaining $key $value
+        }
+    }
+    set options $remaining
+    return $prefix
+}
+
+proc ::tpersist::_prefixedTable {table dialect prefix} {
+    set ref [_tableParts $table]
+    dict set ref name [_prefixName $dialect $prefix [dict get $ref name]]
+    return $ref
+}
+
+proc ::tpersist::_prefixedDefinition {definition dialect prefix} {
+    if {$prefix eq {}} {return $definition}
+    dict set definition name [_prefixName $dialect $prefix [dict get $definition name]]
+    if {[dict exists $definition foreign_keys]} {
+        dict set definition foreign_keys [lmap fk [dict get $definition foreign_keys] {
+            dict set fk table [_prefixedTable [dict get $fk table] $dialect $prefix]
+        }]
+    }
+    return $definition
+}
+
 # Quote schema and table names separately.
 proc ::tpersist::_tableName {table dialect} {
     set parts [_tableParts $table]
@@ -309,11 +343,12 @@ proc ::tpersist::_createTableSql {definition dialect ifNotExists} {
 
 # Return CREATE TABLE SQL without executing it.
 proc ::tpersist::db_schema_sql {definition args} {
+    set prefix [_takePrefix args]
     if {[llength $args] ni {0 2} || ([llength $args] && [lindex $args 0] ne "-dialect")} {
-        _fail ARGS "expected: db_schema_sql definition ?-dialect sqlite|postgresql|mysql?"
+        _fail ARGS "expected: db_schema_sql definition ?-dialect sqlite|postgresql|mysql? ?-prefix name?"
     }
     set dialect [expr {[llength $args] ? [_dialect [lindex $args 1]] : "sqlite"}]
-    return [_createTableSql $definition $dialect 0]
+    return [_createTableSql [_prefixedDefinition $definition $dialect $prefix] $dialect 0]
 }
 
 # Execute DDL while respecting transaction restrictions.
@@ -337,23 +372,29 @@ proc ::tpersist::_ddlOption {args name} {
 
 # Create a table from its definition.
 proc ::tpersist::db_create_table {handle definition args} {
+    set prefix [_takePrefix args]
     set flag [_ddlOption $args -if_not_exists]
-    _ddl $handle [_createTableSql $definition [dict get [_connection $handle] dialect] $flag]
+    set dialect [db_dialect $handle]
+    _ddl $handle [_createTableSql [_prefixedDefinition $definition $dialect $prefix] $dialect $flag]
 }
 
 # Drop the named table.
 proc ::tpersist::db_drop_table {handle table args} {
+    set prefix [_takePrefix args]
     set flag [_ddlOption $args -if_exists]
     set dialect [dict get [_connection $handle] dialect]
     set sql {DROP TABLE }
     if {$flag} { append sql {IF EXISTS } }
-    append sql [_tableName $table $dialect]
+    append sql [_tableName [_prefixedTable $table $dialect $prefix] $dialect]
     _ddl $handle $sql
 }
 
 # Create an index with validated columns and options.
 proc ::tpersist::db_create_index {handle name table columns args} {
     set dialect [dict get [_connection $handle] dialect]
+    set prefix [_takePrefix args]
+    set name [_prefixName $dialect $prefix $name]
+    set table [_prefixedTable $table $dialect $prefix]
     _ddl $handle [_createIndexSql $name $table $columns $dialect {*}$args]
 }
 

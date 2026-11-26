@@ -98,11 +98,16 @@ index names for portability.
 Reading does no database work. Pass a returned table to `db_schema_sql` to inspect
 its DDL for a selected dialect.
 
-`db_apply_schema connection filename ?-additive boolean?` validates every definition for the connection's
+`db_apply_schema connection filename ?-additive boolean? ?-prefix name?` validates every definition for the connection's
 dialect, then invokes `db_create_table` for all tables and `db_create_index` for
 all indexes. It returns an empty result on success. SQLite and PostgreSQL use
 `IF NOT EXISTS`; MySQL checks `information_schema.statistics` for existing indexes.
 These catalog reads do not trigger autobegin.
+
+Use the same prefix on installation and execution to address the same tables.
+For example, `-prefix north` maps a table named `teams` to `north__teams`.
+Named indexes and foreign-key targets use the same mapping. Additive checks
+inspect the selected physical tables.
 
 `-additive` defaults to `false`: only missing tables and indexes are created.
 Set it to `true` to add missing columns to existing tables from the same JSON file:

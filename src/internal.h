@@ -49,6 +49,7 @@ int TpWideInt(TpContext *c, Tcl_Obj *o, Tcl_WideInt *value);
 Tcl_Obj *TpColumn(TpContext *c, Tcl_Obj *o);
 Tcl_Obj *TpTable(TpContext *c, Tcl_Obj *o);
 int TpBuilderCmd(ClientData data, Tcl_Interp *interp, int objc, Tcl_Obj *const objv[]);
+int TpPrefixNameCmd(ClientData data, Tcl_Interp *interp, int objc, Tcl_Obj *const objv[]);
 int TpCompileCmd(ClientData data, Tcl_Interp *interp, int objc, Tcl_Obj *const objv[]);
 enum { TP_PROJECTION=1, TP_ORDERING=2, TP_STAR=4 };
 typedef enum {

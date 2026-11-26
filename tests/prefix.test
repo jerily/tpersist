@@ -1,0 +1,111 @@
+# Copyright Jerily LTD. All Rights Reserved.
+# SPDX-License-Identifier: MIT.
+package require tcltest 2
+package require tpersist
+namespace import ::tcltest::test
+namespace import ::tpersist::db_*
+
+test prefix-compile {physical identifiers respect the dialect and preserve schema, aliases, parameters and reusable statements} -body {
+    set q [db_select [db_table items -schema store] -expr {items.*, c.name AS category}]
+    set q [db_join $q [db_table categories -as c] -expr {items.category = c.id}]
+    set q [db_where $q -expr {items.name = :name}]
+    set result {}
+    foreach dialect {sqlite postgresql mysql} {
+        set compiled [db_compile $q -params {name items} -prefix shop_2 -dialect $dialect]
+        set sql [string map [list ` \"] [dict get $compiled sql]]
+        lappend result [string match {*"store"."shop_2__items" AS "items" INNER JOIN "shop_2__categories" AS "c"*} $sql] \
+            [string match {*"items".*, "c"."name" AS "category"*} $sql] \
+            [expr {"items" in [dict values [dict get $compiled params]]}]
+    }
+    lappend result [expr {[db_compile $q] eq [db_compile $q -prefix {}]}]
+} -result {1 1 1 1 1 1 1 1 1 1}
+
+test prefix-validation {ambiguous separators, invalid tokens, NUL and backend identifier overflow fail before execution} -body {
+    set result {}
+    foreach prefix [list a__b a_ _a {a b} A "a\0b"] {
+        catch {db_compile [db_select t] -prefix $prefix} msg opts
+        lappend result [dict get $opts -errorcode]
+    }
+    foreach {dialect limit} {postgresql 63 mysql 64} {
+        set name [string repeat x [expr {$limit-3}]]
+        lappend result [catch {db_compile [db_select $name] -dialect $dialect -prefix a}]
+        catch {db_schema_sql [db_define_table ${name}x {id {type integer}}] -dialect $dialect -prefix a} msg opts
+        lappend result [dict get $opts -errorcode]
+    }
+    set result
+} -result [concat [lrepeat 6 {TPERSIST VALIDATION}] {0 {TPERSIST VALIDATION} 0 {TPERSIST VALIDATION}}]
+
+test prefix-unicode {PostgreSQL counts the UTF-8 bytes of supplementary characters} -body {
+    set character [encoding convertfrom utf-8 [binary decode hex f09f8c8d]]
+    set name [string repeat $character 15]
+    list [catch {db_compile [db_select $name] -prefix a -dialect postgresql}] \
+        [catch {db_compile [db_select ${name}x] -prefix a -dialect postgresql}]
+} -result {0 1}
+
+foreach dialect {sqlite postgresql mysql} {
+    ::tcltest::testConstraint prefix_$dialect [expr {$dialect eq "sqlite" ?
+        ![catch {package require tpersist-sqlite}] : [info exists ::env(TPERSIST_TEST_[string toupper $dialect])]}]
+    test prefix-operations-$dialect {two installations isolate catalogs, foreign keys, joins, writes, additive DDL and counters} -constraints prefix_$dialect -setup {
+        set options [expr {$dialect eq "sqlite" ? {-database :memory:} : $::env(TPERSIST_TEST_[string toupper $dialect])}]
+        set db [db_connect -dialect $dialect -autobegin 0 {*}$options]
+        set left p[pid]_a
+        set right p[pid]xa
+        set fixture [file join $::tcltest::testsDirectory sql]
+        set counter [db_define_table counts {id {type integer primary_key 1} n {type bigint not_null 1}}]
+    } -body {
+        foreach prefix [list $left $right] {
+            db_apply_schema $db [file join $fixture schema.json] -prefix $prefix
+            db_apply_schema $db [file join $fixture schema.json] -additive 1 -prefix $prefix
+            db_create_table $db $counter -prefix $prefix
+        }
+        db_apply_schema $db [file join $fixture add-columns-indexed.json] -prefix $left -additive true
+        set result [list [db_tables $db -prefix $left] [db_tables $db -prefix $right]]
+        set all [db_tables $db]
+        lappend result [expr {"${left}__members" in $all && "${right}__members" in $all}]
+        db_execute $db [db_values [db_insert teams] {id 11 name North}] -prefix $left
+        set member [db_values [db_insert members] {team_id 11 id 1 name Kim}]
+        lappend result [catch {db_execute $db $member -prefix $right}]
+        foreach prefix [list $left $right] {
+            db_execute $db [db_values [db_insert teams] {id 12}] -prefix $prefix
+            if {$prefix eq $right} {db_execute $db [db_values [db_insert teams] {id 11}] -prefix $prefix}
+            db_execute $db $member -prefix $prefix
+            # Only the unique (name, id) index prevents this insert across teams.
+            set duplicate [db_values [db_insert members] {team_id 12 id 1 name Kim}]
+            lappend result [catch {db_execute $db $duplicate -prefix $prefix}]
+        }
+        set edit [db_where [db_values [db_update members] {name Lee}] -expr {members.id = :id}]
+        db_execute $db $edit -params {id 1} -prefix $left
+        set q [db_select members -expr {members.name, t.name AS team}]
+        set q [db_join $q [db_table teams -as t] -expr {t.id = members.team_id}]
+        db_foreach_row $db row $q -prefix $left {lappend result [dict get $row name] [dict get $row team]}
+        lappend result [catch {db_execute $db [db_select teams -expr {teams.name}] -prefix $right}]
+        foreach prefix [list $left $right $left] {
+            lappend result [db_increment $db counts {id 1} n -prefix $prefix]
+        }
+        set del [db_where [db_delete teams] -expr {teams.id = 11}]
+        db_execute $db $del -prefix $left
+        lappend result [dict get [db_execute $db [db_select members] -prefix $left] rows]
+        db_drop_table $db counts -prefix $left
+        lappend result [db_tables $db -prefix $left] [db_tables $db -prefix $right]
+    } -cleanup {
+        try {
+            foreach prefix [list $left $right] {
+                foreach name {members teams counts} {db_drop_table $db $name -prefix $prefix -if_exists true}
+            }
+        } finally {db_disconnect $db}
+    } -result {{counts members teams} {counts members teams} 1 1 1 1 Lee North 1 1 1 2 {} {members teams} {counts members teams}}
+}
+
+test prefix-upsert {conflict updates resolve both the excluded row and the logical target within the prefix} -constraints prefix_sqlite -setup {
+    set db [db_connect -database :memory: -autobegin 0]
+    db_create_table $db [db_define_table totals {id {type integer primary_key 1} n {type integer}}] -prefix north
+} -body {
+    set values {}
+    set q [db_values [db_insert totals] {id 1 n 3}]
+    set q [db_on_conflict $q id [dict create n [db_expr {totals.n + EXCLUDED.n}]] -expressions]
+    set q [db_returning $q -expr {totals.n}]
+    foreach pass {1 2} {lappend values [dict get [lindex [dict get [db_execute $db $q -prefix north] rows] 0] n]}
+    set values
+} -cleanup {db_disconnect $db} -result {3 6}
+
+::tcltest::cleanupTests
