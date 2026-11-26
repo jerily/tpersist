@@ -228,9 +228,9 @@ db_execute $db $query -params {id 42} -prefix north
 Each call chooses its prefix independently. Omitting the option or passing an
 empty string uses the original names. A nonempty prefix consists of lowercase
 ASCII letters or digits, optionally separated by single underscores. The compiler
-quotes each resulting identifier. The limit is 63 bytes of Tcl string data for
-PostgreSQL and 64 characters for MySQL. The logical schema and statement dictionaries can be reused with another
-prefix.
+quotes each resulting identifier. In every dialect, the complete prefixed name
+(`prefix__name`) may use up to 63 bytes in Tcl's string representation.
+The logical schema and statement dictionaries can be reused with another prefix.
 
 The mapping applies to tables, joins, foreign-key targets, and explicitly named
 indexes. Schema names, column names, aliases and bound values keep their original

@@ -20,29 +20,29 @@ test prefix-compile {physical identifiers respect the dialect and preserve schem
     lappend result [expr {[db_compile $q] eq [db_compile $q -prefix {}]}]
 } -result {1 1 1 1 1 1 1 1 1 1}
 
-test prefix-validation {ambiguous separators, invalid tokens, NUL and backend identifier overflow fail before execution} -body {
+test prefix-validation {ambiguous separators, invalid tokens and NUL fail before execution} -body {
     set result {}
     foreach prefix [list a__b a_ _a {a b} A "a\0b"] {
         catch {db_compile [db_select t] -prefix $prefix} msg opts
         lappend result [dict get $opts -errorcode]
     }
-    foreach {dialect limit} {postgresql 63 mysql 64} {
-        set name [string repeat x [expr {$limit-3}]]
-        lappend result [catch {db_compile [db_select $name] -dialect $dialect -prefix a}]
-        catch {db_schema_sql [db_define_table ${name}x {id {type integer}}] -dialect $dialect -prefix a} msg opts
-        lappend result [dict get $opts -errorcode]
-    }
     set result
-} -result [concat [lrepeat 6 {TPERSIST VALIDATION}] {0 {TPERSIST VALIDATION} 0 {TPERSIST VALIDATION}}]
-
-test prefix-unicode {PostgreSQL limits encoded bytes and MySQL limits characters} -body {
-    set name [string repeat é 30]
-    list [catch {db_compile [db_select $name] -prefix a -dialect postgresql}] \
-        [catch {db_compile [db_select ${name}x] -prefix a -dialect postgresql}] \
-        [catch {db_compile [db_select ${name}x] -prefix a -dialect mysql}]
-} -result {0 1 0}
+} -result [lrepeat 6 {TPERSIST VALIDATION}]
 
 foreach dialect {sqlite postgresql mysql} {
+    test prefix-length-$dialect {schema and statement compilation accept 63 prefixed bytes and reject 64} -body {
+        set result {}
+        foreach name [list [string repeat x 60] [string repeat é 30]] {
+            db_compile [db_select $name] -dialect $dialect -prefix a
+            db_schema_sql [db_define_table $name {id {type integer}}] -dialect $dialect -prefix a
+            catch {db_compile [db_select ${name}x] -dialect $dialect -prefix a} msg opts
+            lappend result [dict get $opts -errorcode]
+            catch {db_schema_sql [db_define_table ${name}x {id {type integer}}] -dialect $dialect -prefix a} msg opts
+            lappend result [dict get $opts -errorcode]
+        }
+        set result
+    } -result [lrepeat 4 {TPERSIST VALIDATION}]
+
     ::tcltest::testConstraint prefix_$dialect [expr {$dialect eq "sqlite" ?
         ![catch {package require tpersist-sqlite}] : [info exists ::env(TPERSIST_TEST_[string toupper $dialect])]}]
     test prefix-operations-$dialect {two installations isolate catalogs, foreign keys, joins, writes, additive DDL and counters} -constraints prefix_$dialect -setup {

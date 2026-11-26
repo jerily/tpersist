@@ -72,7 +72,7 @@ static int checkPrefix(TpContext *c, Tcl_Obj *prefix) {
     return TCL_OK;
 }
 
-static Tcl_Obj *physicalName(TpContext *c, Tcl_Obj *prefix, Tcl_Obj *name, const char *dialect) {
+static Tcl_Obj *physicalName(TpContext *c, Tcl_Obj *prefix, Tcl_Obj *name) {
     Tcl_Obj *result = TpOwn(c, Tcl_DuplicateObj(prefix));
     Tcl_AppendToObj(result, "__", 2);
     if (name) {
@@ -84,16 +84,8 @@ static Tcl_Obj *physicalName(TpContext *c, Tcl_Obj *prefix, Tcl_Obj *name, const
         }
         Tcl_AppendObjToObj(result, name);
     }
-    int tooLong = 0;
-    if (!strcmp(dialect, "postgresql")) {
-        TpSize bytes;
-        Tcl_GetStringFromObj(result, &bytes);
-        tooLong = bytes > 63;
-    } else if (!strcmp(dialect, "mysql")) {
-        tooLong = Tcl_GetCharLength(result) > 64;
-    }
-    if (tooLong) {
-        TpError(c, "VALIDATION", "prefixed identifier exceeds the database identifier length limit");
+    if (strlen(Tcl_GetString(result)) > 63) {
+        TpError(c, "VALIDATION", "prefixed identifier exceeds 63 bytes");
         return NULL;
     }
     return result;
@@ -112,7 +104,7 @@ int TpPrefixNameCmd(ClientData unused, Tcl_Interp *interp, int objc, Tcl_Obj *co
     if (code == TCL_OK) {
         Tcl_Obj *name = objc == 4 ? objv[3] : NULL;
         Tcl_Obj *result = Tcl_GetCharLength(objv[2])
-            ? physicalName(&c, objv[2], name, Tcl_GetString(objv[1]))
+            ? physicalName(&c, objv[2], name)
             : (name ? name : objv[2]);
         if (result) Tcl_SetObjResult(interp, result);
         else code = TCL_ERROR;
@@ -122,7 +114,7 @@ int TpPrefixNameCmd(ClientData unused, Tcl_Interp *interp, int objc, Tcl_Obj *co
 }
 
 static int physicalIdentifier(Compiler *p, Tcl_Obj *name) {
-    if (p->prefix) name = physicalName(&p->c, p->prefix, name, p->dialect);
+    if (p->prefix) name = physicalName(&p->c, p->prefix, name);
     return name ? identifier(p, name) : TCL_ERROR;
 }
 
