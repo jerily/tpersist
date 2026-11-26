@@ -48,7 +48,7 @@ oo::class create ::tpersist::oo::Query {
 # aliases of the same mutable query, while fork creates a separate query.
 namespace eval ::tpersist::oo {
     variable operation
-    foreach operation {where having order_by group_by returning limit offset distinct values join on_conflict clear} {
+    foreach operation {where having order_by group_by returning limit offset distinct values insert_select join on_conflict clear} {
         oo::define ::tpersist::oo::Query method $operation args [format {
             set statement [::tpersist::db_%s $statement {*}$args]
             return [self]
