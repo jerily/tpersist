@@ -23,13 +23,20 @@ proc ::tpersist::_backupSchema {handle schema} {
 }
 
 proc ::tpersist::db_tables {handle args} {
+    set prefix [_takePrefix args]
     set schema {}
     if {[llength $args]} {
-        if {[llength $args] != 2 || [lindex $args 0] ne "-schema"} {_fail ARGS "expected: db_tables connection ?-schema name?"}
+        if {[llength $args] != 2 || [lindex $args 0] ne "-schema"} {_fail ARGS "expected: db_tables connection ?-schema name? ?-prefix name?"}
         set schema [lindex $args 1]
     }
-    set schema [_backupSchema $handle $schema]
-    if {[db_dialect $handle] eq "sqlite"} {
+    set dialect [db_dialect $handle]
+    set marker [_prefixName $dialect $prefix]
+    if {$dialect ne "mysql"} {set schema [_backupSchema $handle $schema]}
+    if {$dialect eq "mysql"} {
+        set rows [_raw $handle {SELECT table_name AS name FROM information_schema.tables
+            WHERE table_schema = COALESCE(NULLIF(:schema, ''), DATABASE()) AND table_type = 'BASE TABLE'
+            ORDER BY table_name} [dict create schema $schema]]
+    } elseif {$dialect eq "sqlite"} {
         set rows [_raw $handle {SELECT name FROM pragma_table_list WHERE schema = :schema AND type IN ('table','virtual') AND name NOT LIKE 'sqlite\_%' ESCAPE '\' ORDER BY name} [dict create schema $schema]]
     } else {
         set rows [_raw $handle {SELECT c.relname AS name FROM pg_catalog.pg_class c
@@ -38,7 +45,13 @@ proc ::tpersist::db_tables {handle args} {
             AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d WHERE d.classid = 'pg_catalog.pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')
             ORDER BY c.relname} [dict create schema $schema]]
     }
-    return [lmap row $rows {dict get $row name}]
+    if {$marker eq {}} {return [lmap row $rows {dict get $row name}]}
+    set length [string length $marker]
+    return [lmap row $rows {
+        set name [dict get $row name]
+        if {[string first $marker $name] != 0 || $name eq $marker} continue
+        string range $name $length end
+    }]
 }
 
 proc ::tpersist::_backupNames {available requested} {

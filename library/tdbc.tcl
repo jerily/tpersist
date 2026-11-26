@@ -123,7 +123,7 @@ proc ::tpersist::_prepare {handle statement options} {
     set c [_connection $handle]
     if {[llength $options] % 2} { _fail ARGS "execution options must be name/value pairs" }
     foreach {key value} $options {
-        if {$key ni {-params -nulls}} { _fail ARGS "unknown execution option: $key" }
+        if {$key ni {-params -nulls -prefix}} { _fail ARGS "unknown execution option: $key" }
     }
     set compiled [db_compile $statement -dialect [dict get $c dialect] {*}$options]
     if {[llength [dict get $compiled required]]} {

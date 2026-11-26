@@ -12,6 +12,8 @@ typedef struct {
     const char *dialect;
     Tcl_Obj *params, *types, *bindings, *nullNames, *required, *named, *used;
     unsigned int serial;
+    Tcl_Obj *prefix, *writeTarget;
+    int conflictUpdate;
     int depth;
 } Compiler;
 
@@ -58,6 +60,76 @@ static int identifier(Compiler *p,Tcl_Obj *o) {
     Tcl_DStringAppend(&p->sql,&quote,1); return TCL_OK;
 }
 
+/* The same mapping is used by DDL, catalog discovery and the compiler. */
+static int checkPrefix(TpContext *c, Tcl_Obj *prefix) {
+    TpSize length;
+    const char *s = Tcl_GetStringFromObj(prefix, &length);
+    for (TpSize i = 0; i < length; ++i) {
+        if ((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= '0' && s[i] <= '9')) continue;
+        if (s[i] == '_' && i > 0 && i + 1 < length && s[i-1] != '_') continue;
+        return TpError(c, "VALIDATION", "prefix must contain lowercase ASCII letters or digits separated by optional single underscores");
+    }
+    return TCL_OK;
+}
+
+static Tcl_Obj *physicalName(TpContext *c, Tcl_Obj *prefix, Tcl_Obj *name) {
+    Tcl_Obj *result = TpOwn(c, Tcl_DuplicateObj(prefix));
+    Tcl_AppendToObj(result, "__", 2);
+    if (name) {
+        TpSize length;
+        const char *s = Tcl_GetStringFromObj(name, &length);
+        if (!length || memchr(s, 0, (size_t)length) || strstr(s, "\xc0\x80")) {
+            TpError(c, "VALIDATION", "identifiers must be nonempty and contain no NUL characters");
+            return NULL;
+        }
+        Tcl_AppendObjToObj(result, name);
+    }
+    if (strlen(Tcl_GetString(result)) > 63) {
+        TpError(c, "VALIDATION", "prefixed identifier exceeds 63 bytes");
+        return NULL;
+    }
+    return result;
+}
+
+/* Return a physical identifier, or its literal catalog marker if name is omitted. */
+int TpPrefixNameCmd(ClientData unused, Tcl_Interp *interp, int objc, Tcl_Obj *const objv[]) {
+    (void)unused;
+    if (objc != 3 && objc != 4) {
+        Tcl_WrongNumArgs(interp, 1, objv, "dialect prefix ?name?");
+        return TCL_ERROR;
+    }
+    TpContext c = {interp, Tcl_NewListObj(0, NULL)};
+    Tcl_IncrRefCount(c.arena);
+    int code = checkPrefix(&c, objv[2]);
+    if (code == TCL_OK) {
+        Tcl_Obj *name = objc == 4 ? objv[3] : NULL;
+        Tcl_Obj *result = Tcl_GetCharLength(objv[2])
+            ? physicalName(&c, objv[2], name)
+            : (name ? name : objv[2]);
+        if (result) Tcl_SetObjResult(interp, result);
+        else code = TCL_ERROR;
+    }
+    Tcl_DecrRefCount(c.arena);
+    return code;
+}
+
+static int physicalIdentifier(Compiler *p, Tcl_Obj *name) {
+    if (p->prefix) name = physicalName(&p->c, p->prefix, name);
+    return name ? identifier(p, name) : TCL_ERROR;
+}
+
+static int qualifier(Compiler *p, Tcl_Obj *name) {
+    if (!p->prefix || !p->writeTarget) return identifier(p, name);
+    const char *qual = Tcl_GetString(name), *target = Tcl_GetString(p->writeTarget);
+    int foldCase = strcmp(p->dialect, "postgresql") != 0;
+    if (p->conflictUpdate && Tcl_StringCaseMatch(qual, "excluded", foldCase)) return identifier(p, name);
+    if (!strcmp(qual, target) || (foldCase && Tcl_GetCharLength(name) == Tcl_GetCharLength(p->writeTarget)
+            && !Tcl_UtfNcasecmp(qual, target, Tcl_GetCharLength(name)))) {
+        return physicalIdentifier(p, name);
+    }
+    return identifier(p, name);
+}
+
 static int table(Compiler *p,Tcl_Obj *d,int aliases) {
     TRY(keys(p,d,"node name schema alias"));
     Tcl_Obj *node=required(p,d,"node"), *name=required(p,d,"name");
@@ -65,7 +137,9 @@ static int table(Compiler *p,Tcl_Obj *d,int aliases) {
     if(strcmp(Tcl_GetString(node),"table")) return TpError(&p->c,"VALIDATION","expected a table expression");
     Tcl_Obj *schema=TpGet(&p->c,d,"schema"), *alias=TpGet(&p->c,d,"alias");
     if(schema) { TRY(identifier(p,schema)); ADD("."); }
-    TRY(identifier(p,name));
+    TRY(physicalIdentifier(p,name));
+    /* Preserve logical qualifiers in projections and JOIN predicates. */
+    if(p->prefix && aliases && !alias) alias=name;
     if(alias) {
         if(!aliases) return TpError(&p->c,"UNSUPPORTED","table aliases on write statements are not supported");
         ADD(" AS "); TRY(identifier(p,alias));
@@ -209,13 +283,13 @@ static int exprBody(Compiler *p,Tcl_Obj *d,int flags) {
         TRY(keys(p,d,"node name table"));
         Tcl_Obj *name=required(p,d,"name"), *qual=TpGet(&p->c,d,"table");
         if(!name) return TCL_ERROR;
-        if(qual) { TRY(identifier(p,qual)); ADD("."); }
+        if(qual) { TRY(qualifier(p,qual)); ADD("."); }
         return identifier(p,name);
     }
     if(!strcmp(node,"star")) {
         TRY(keys(p,d,"node table"));
         if(!(flags&STAR)) return TpError(&p->c,"VALIDATION","star is only valid in projections and count");
-        o=TpGet(&p->c,d,"table"); if(o) { TRY(identifier(p,o)); ADD("."); }
+        o=TpGet(&p->c,d,"table"); if(o) { TRY(qualifier(p,o)); ADD("."); }
         ADD("*"); return TCL_OK;
     }
     if(!strcmp(node,"null")) { TRY(keys(p,d,"node")); ADD("NULL"); return TCL_OK; }
@@ -363,6 +437,7 @@ static int statement(Compiler *p,Tcl_Obj *d) {
     if(!insert && !update && !del) return TpError(&p->c,"VALIDATION","unknown statement kind");
     TRY(keys(p,d,insert?"version kind table values returning on_conflict":update?"version kind table values where returning":"version kind table where returning"));
     ADD(insert?"INSERT INTO ":update?"UPDATE ":"DELETE FROM "); TRY(table(p,source,0));
+    p->writeTarget = TpGet(&p->c, source, "name");
     if(!del) {
         Tcl_Obj *values=TpGet(&p->c,d,"values"); if(!values) values=TpDict(&p->c);
         TpSize n; TRY(Tcl_DictObjSize(p->c.interp,values,&n));
@@ -409,6 +484,7 @@ static int statement(Compiler *p,Tcl_Obj *d) {
         TRY(Tcl_DictObjSize(p->c.interp,values,&n));
         if(!n) { ADD("NOTHING"); } else {
             ADD("UPDATE SET ");
+            p->conflictUpdate = 1;
             Tcl_DictSearch search; Tcl_Obj *key,*val; int done,first=1,code=TCL_OK;
             TRY(Tcl_DictObjFirst(p->c.interp,values,&search,&key,&val,&done));
             while(!done) {
@@ -422,6 +498,7 @@ static int statement(Compiler *p,Tcl_Obj *d) {
             Tcl_DictObjDone(&search); TRY(code);
         }
     }
+    p->conflictUpdate = 0;
     if(!insert) TRY(clause(p,d,"where"," WHERE "," AND ",0,0));
     Tcl_Obj *ret=TpGet(&p->c,d,"returning");
     if(ret) {
@@ -433,7 +510,7 @@ static int statement(Compiler *p,Tcl_Obj *d) {
 
 int TpCompileCmd(ClientData unused,Tcl_Interp *interp,int objc,Tcl_Obj *const objv[]) {
     (void)unused;
-    if(objc<2 || objc%2!=0) { Tcl_WrongNumArgs(interp,1,objv,"statement ?-dialect sqlite|postgresql|mysql? ?-params dict? ?-nulls names?"); return TCL_ERROR; }
+    if(objc<2 || objc%2!=0) { Tcl_WrongNumArgs(interp,1,objv,"statement ?-dialect sqlite|postgresql|mysql? ?-params dict? ?-nulls names? ?-prefix name?"); return TCL_ERROR; }
     Compiler p={0}; p.c.interp=interp; p.c.arena=Tcl_NewListObj(0,NULL); Tcl_IncrRefCount(p.c.arena);
     Tcl_DStringInit(&p.sql); p.dialect="sqlite";
     p.params=TpDict(&p.c); p.types=TpDict(&p.c); p.bindings=TpDict(&p.c); p.nullNames=TpDict(&p.c);
@@ -442,7 +519,10 @@ int TpCompileCmd(ClientData unused,Tcl_Interp *interp,int objc,Tcl_Obj *const ob
     for(int i=2;i<objc;i+=2) {
         const char *opt=Tcl_GetString(objv[i]);
         if(!strcmp(opt,"-dialect")) p.dialect=Tcl_GetString(objv[i+1]);
-        else if(!strcmp(opt,"-params")) {
+        else if(!strcmp(opt,"-prefix")) {
+            if(checkPrefix(&p.c,objv[i+1]) != TCL_OK) goto done;
+            p.prefix = Tcl_GetCharLength(objv[i+1]) ? objv[i+1] : NULL;
+        } else if(!strcmp(opt,"-params")) {
             TpSize n; if(Tcl_DictObjSize(interp,objv[i+1],&n)!=TCL_OK) goto done;
             p.bindings=objv[i+1];
         } else if(!strcmp(opt,"-nulls")) {

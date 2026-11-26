@@ -296,12 +296,23 @@ proc ::tpersist::_schemaAdditions {handle definitions dialect} {
 
 # Create missing objects, optionally adding missing columns to existing tables.
 proc ::tpersist::db_apply_schema {handle filename args} {
+    set prefix [_takePrefix args]
     set additive [_ddlOption $args -additive]
     set c [_connection $handle]
     set dialect [dict get $c dialect]
     set document [db_read_schema $filename]
     if {$dialect eq "mysql" && [dict get $c transaction]} {
         _fail TRANSACTION "MySQL schema commands require no active transaction because DDL can commit implicitly"
+    }
+    if {$prefix ne {}} {
+        _prefixName $dialect $prefix
+        dict set document tables [lmap definition [dict get $document tables] {
+            _prefixedDefinition $definition $dialect $prefix
+        }]
+        dict set document indexes [lmap index [dict get $document indexes] {
+            dict set index name [_prefixName $dialect $prefix [dict get $index name]]
+            dict set index table [_prefixedTable [dict get $index table] $dialect $prefix]
+        }]
     }
     # Validate every statement for this dialect before issuing any DDL, even
     # when the corresponding table/index already exists.

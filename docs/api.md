@@ -165,7 +165,7 @@ DELETE allows all rows to be affected, following ordinary SQL semantics.
 ## Compilation and parameters
 
 ```tcl
-db_compile statement ?-dialect sqlite|postgresql|mysql? ?-params dictionary? ?-nulls names?
+db_compile statement ?-dialect sqlite|postgresql|mysql? ?-params dictionary? ?-nulls names? ?-prefix name?
 ```
 
 SQLite is the default dialect. Compilation returns:
@@ -213,6 +213,30 @@ Identifiers are quoted separately from values. This API deliberately has no
 raw SQL expression constructor. Dialect differences include quoting, pagination,
 empty INSERT syntax, schema types, generated keys, and RETURNING availability.
 
+## Table prefixes
+
+Pass the same `-prefix` to schema and statement commands to use a separate set of
+physical tables in one database schema. For example, both calls below use
+`north__members` as the physical name for `members`.
+
+```tcl
+db_apply_schema $db members.json -prefix north
+set query [db_where [db_select members] -expr {members.id = :id}]
+db_execute $db $query -params {id 42} -prefix north
+```
+
+Each call chooses its prefix independently. Omitting the option or passing an
+empty string uses the original names. A nonempty prefix consists of lowercase
+ASCII letters or digits, optionally separated by single underscores. The compiler
+quotes each resulting identifier. In every dialect, the complete prefixed name
+(`prefix__name`) may use up to 63 bytes in Tcl's string representation.
+The logical schema and statement dictionaries can be reused with another prefix.
+
+The mapping applies to tables, joins, foreign-key targets, and explicitly named
+indexes. Schema names, column names, aliases and bound values keep their original
+meaning. Reserve physical names beginning with `prefix__` for that table set.
+Row ownership and access checks still belong to the caller.
+
 ## Connections and results
 
 ```tcl
@@ -223,8 +247,8 @@ db_connect -database app.sqlite ?-autobegin boolean? ?driverOptions...?
 db_connect -dialect postgresql -database app ?driverOptions...?
 db_connect -dialect mysql -database app ?driverOptions...?
 db_disconnect connection
-db_execute connection statement ?-params dictionary? ?-nulls names?
-db_foreach_row connection rowVariable statement ?-params dictionary? ?-nulls names? script
+db_execute connection statement ?-params dictionary? ?-nulls names? ?-prefix name?
+db_foreach_row connection rowVariable statement ?-params dictionary? ?-nulls names? ?-prefix name? script
 ```
 
 The dictionary API opens an autocommit connection and accepts `postgres` or
@@ -272,7 +296,7 @@ containing that character. These are driver limitations, not JSON conversions.
 
 ## Atomic counters
 
-`db_increment connection table keys column ?-initial dictionary? ?-types dictionary?`
+`db_increment connection table keys column ?-initial dictionary? ?-types dictionary? ?-prefix name?`
 inserts a counter at 1 or atomically increments it, returning this operation's
 value. `keys` is a nonempty dictionary identifying a PRIMARY KEY or UNIQUE
 constraint. Its columns must be non-null. The counter must be a non-null integer.
@@ -338,12 +362,12 @@ on their storage engine.
 
 ```tcl
 db_define_table name columnDictionary ?-schema schema? ?-primary_key names? ?-unique columnLists? ?-foreign_keys definitions?
-db_schema_sql definition ?-dialect sqlite|postgresql|mysql?
-db_create_table connection definition ?-if_not_exists boolean?
-db_drop_table connection table ?-if_exists boolean?
-db_create_index connection name table columns ?-unique boolean? ?-if_not_exists boolean? ?-descending names?
+db_schema_sql definition ?-dialect sqlite|postgresql|mysql? ?-prefix name?
+db_create_table connection definition ?-if_not_exists boolean? ?-prefix name?
+db_drop_table connection table ?-if_exists boolean? ?-prefix name?
+db_create_index connection name table columns ?-unique boolean? ?-if_not_exists boolean? ?-descending names? ?-prefix name?
 db_read_schema filename
-db_apply_schema connection filename ?-additive boolean?
+db_apply_schema connection filename ?-additive boolean? ?-prefix name?
 ```
 
 Each column specification is a dictionary with required `type`. Supported schema
@@ -414,7 +438,9 @@ of the actual database and installed TDBC driver.
 
 ## JSONL export/import
 
-`db_tables connection ?-schema name?` discovers application tables.
+`db_tables connection ?-schema name? ?-prefix name?` discovers application tables.
+With a prefix it returns matching logical table names, with the prefix removed.
+Without a prefix it returns physical names. JSONL backups use physical names.
 `db_export_jsonl connection path ?-tables names? ?-schema name? ?-gzip boolean?`
 exports schemas and rows. `db_import_jsonl` accepts the same arguments, creates
 missing tables from the archived JSON schemas, and restores into empty tables.
