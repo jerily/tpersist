@@ -1,0 +1,214 @@
+# Copyright Jerily LTD. All Rights Reserved.
+# SPDX-License-Identifier: MIT.
+
+package require tcltest 2
+package require tpersist
+package require tjson 1.0.30
+namespace import ::tcltest::test
+namespace import ::tpersist::db_*
+
+namespace eval ::fttest {
+    variable fixture [file join [file dirname [info script]] sql fulltext.json]
+    variable serial 0
+}
+
+proc ::fttest::openDb {dialect {sqliteFile :memory:}} {
+    if {$dialect eq "sqlite"} {return [db_connect -database $sqliteFile -autobegin 0]}
+    return [db_connect -dialect $dialect -autobegin 0 {*}$::env(TPERSIST_TEST_[string toupper $dialect])]
+}
+
+proc ::fttest::prefix {} {
+    variable serial
+    return [format ft%d_%d [pid] [incr serial]]
+}
+
+proc ::fttest::applySchema {db prefix columns args} {
+    variable fixture
+    set channel [open $fixture r]
+    try {set root [::tjson::parse [read $channel]]} finally {close $channel}
+    try {
+        set table [::tjson::get_array_item [::tjson::get_object_item $root tables] 0]
+        if {[llength $columns]} {
+            set virtual [::tjson::get_object_item $table virtual]
+            set search [::tjson::get_object_item $virtual search]
+            ::tjson::replace_item_in_object $search columns [list L [lmap c $columns {list S $c}]]
+        } else {
+            ::tjson::replace_item_in_object $table virtual {M {}}
+        }
+        set file [::tcltest::makeFile [::tjson::to_pretty_json $root] $prefix.json]
+        try {db_apply_schema $db $file -prefix $prefix {*}$args} finally {::tcltest::removeFile $prefix.json}
+    } finally {::tjson::destroy $root}
+}
+
+proc ::fttest::seed {db prefix} {
+    foreach row {
+        {sku A doc_number 70 title {café linen} category fabric}
+        {sku B doc_number 35 title {orchid} body {bleu jacket} category flowers}
+        {sku C doc_number 10 title {pine} category timber}
+        {sku D doc_number 45 title {bamboo} category canes}
+    } {
+        db_execute $db [db_values [db_insert products] $row] -prefix $prefix
+    }
+}
+
+proc ::fttest::hits {db prefix words} {
+    set query [db_where [db_select [db_table products -as p] -expr {p.sku}] -expr {p.search MATCH :q}]
+    set result [db_execute $db [db_order_by $query -expr {p.sku}] -params [dict create q $words] -prefix $prefix]
+    return [lmap row [dict get $result rows] {dict get $row sku}]
+}
+
+proc ::fttest::closeDb {db prefix} {
+    try {db_drop_table $db products -if_exists true -prefix $prefix} finally {db_disconnect $db}
+}
+
+::tcltest::testConstraint ft_tcl9 [package vsatisfies [info patchlevel] 9]
+foreach dialect {sqlite postgresql mysql} {
+    if {$dialect eq "sqlite"} {
+        ::tcltest::testConstraint ft_$dialect [expr {![catch {package require tpersist-sqlite}]}]
+    } else {
+        ::tcltest::testConstraint ft_$dialect [info exists ::env(TPERSIST_TEST_[string toupper $dialect])]
+    }
+
+    test fulltext-query-$dialect {natural words, rank and key correlation work on an installed, prefixed schema} -constraints ft_$dialect -setup {
+        set prefix [::fttest::prefix]
+        set file {}
+        if {$dialect eq "sqlite"} {set file [::tcltest::makeFile {} $prefix.sqlite]}
+        set db [::fttest::openDb $dialect $file]
+        ::fttest::applySchema $db $prefix {}
+        ::fttest::seed $db $prefix
+        ::fttest::applySchema $db $prefix {title body}
+        db_disconnect $db
+        set db [::fttest::openDb $dialect $file]
+    } -body {
+        set words {linen jacket}
+        set products [db_table products -as p]
+        set rank [db_alias [db_match_score [db_col search -table p] [db_param q]] relevance]
+        set query [db_select $products -columns [list [db_col sku -table p] $rank]]
+        set query [db_where $query [db_match [db_col search -table p] [db_param q]]]
+        set query [db_order_by $query -expr {relevance DESC, p.sku ASC}]
+        set ranked [dict get [db_execute $db $query -params [dict create q $words] -prefix $prefix] rows]
+        set scores [lmap row $ranked {dict get $row relevance}]
+        set both [lsort [lmap row $ranked {dict get $row sku}]]
+        set descending [expr {[llength $scores] == 2 && [lindex $scores 0] >= [lindex $scores 1] && [lindex $scores 1] > 0}]
+        set all [db_execute $db [db_select $products -expr {p.*}] -prefix $prefix]
+        set scalar [db_select $products -expr {COUNT(*)}]
+        set scalar [db_where $scalar -expr {p.search MATCH :q OR p.sku = 'D'}]
+        set outer [db_select products -columns [list [db_alias [db_scalar $scalar] count_hits]]]
+        set row [lindex [dict get [db_execute $db [db_limit $outer 1] -params [dict create q $words] -prefix $prefix] rows] 0]
+        list $both $descending [dict get $all columns] [dict get $row count_hits] \
+            [::fttest::hits $db $prefix {café}] [::fttest::hits $db $prefix {") - () *}] \
+            [::fttest::hits $db $prefix {}] [db_tables $db -prefix $prefix]
+    } -cleanup {
+        try {::fttest::closeDb $db $prefix} finally {if {$file ne {}} {::tcltest::removeFile $file}}
+    } -result {{A B} 1 {sku doc_number title body category} 3 A {} {} products}
+
+    test fulltext-four-byte-$dialect {supplementary UTF-8 survives search and row retrieval} -constraints [list ft_$dialect ft_tcl9] -setup {
+        set prefix [::fttest::prefix]
+        set db [::fttest::openDb $dialect]
+        ::fttest::applySchema $db $prefix {title}
+        ::fttest::seed $db $prefix
+    } -body {
+        set label {🧵 café linen}
+        db_execute $db [db_where [db_values [db_update products] [dict create title $label]] \
+            -expr {sku = 'A'}] -prefix $prefix
+        set readback [db_execute $db [db_where [db_select products -columns title] -expr {sku = 'A'}] -prefix $prefix]
+        list [expr {[dict get [lindex [dict get $readback rows] 0] title] eq $label}] [::fttest::hits $db $prefix {🧵 café}]
+    } -cleanup {::fttest::closeDb $db $prefix} -result {1 A}
+
+    test fulltext-lifecycle-$dialect {schema drift, rebuild, live writes, repair and removal preserve base rows} -constraints ft_$dialect -setup {
+        set prefix [::fttest::prefix]
+        set db [::fttest::openDb $dialect]
+        ::fttest::applySchema $db $prefix {title body}
+        ::fttest::seed $db $prefix
+    } -body {
+        ::fttest::applySchema $db $prefix {title body} -additive true
+        set mismatch [catch {::fttest::applySchema $db $prefix {category}}]
+        ::fttest::applySchema $db $prefix {category} -additive true
+        set rebuilt [list [::fttest::hits $db $prefix linen] [::fttest::hits $db $prefix timber]]
+        db_execute $db [db_where [db_values [db_update products] {category cotton}] -expr {sku = 'C'}] -prefix $prefix
+        set updated [list [::fttest::hits $db $prefix cotton] [::fttest::hits $db $prefix timber]]
+        db_execute $db [db_where [db_delete products] -expr {sku = 'B'}] -prefix $prefix
+        set deleted [::fttest::hits $db $prefix flowers]
+        if {$dialect eq "sqlite"} {::tpersist::_raw $db VACUUM}
+        set afterVacuum [::fttest::hits $db $prefix fabric]
+        set physical ${prefix}__products
+        set role [expr {$dialect eq "sqlite" ? "ai" : "idx"}]
+        set artifact [::tpersist::_quote [::tpersist::_ftsName $physical search $role] $dialect]
+        switch $dialect {
+            sqlite {::tpersist::_raw $db "DROP TRIGGER $artifact"}
+            postgresql {::tpersist::_raw $db "DROP INDEX $artifact"}
+            mysql {::tpersist::_raw $db "DROP INDEX $artifact ON [::tpersist::_quote $physical mysql]"}
+        }
+        ::fttest::applySchema $db $prefix {category} -additive true
+        db_execute $db [db_values [db_insert products] {sku E doc_number 110 title dash category copper}] -prefix $prefix
+        set repaired [::fttest::hits $db $prefix copper]
+        ::fttest::applySchema $db $prefix {} -additive true
+        set absent [catch {::fttest::hits $db $prefix cotton}]
+        set rows [dict get [db_execute $db [db_order_by [db_select products -columns sku] sku] -prefix $prefix] rows]
+        list $mismatch $rebuilt $updated $deleted $afterVacuum $repaired $absent [lmap row $rows {dict get $row sku}]
+    } -cleanup {::fttest::closeDb $db $prefix} -result {1 {{} C} {C {}} {} A E 1 {A C D E}}
+}
+
+test fulltext-sqlite-replace {REPLACE removes old terms even when the document ID changes} -constraints ft_sqlite -setup {
+    set prefix [::fttest::prefix]
+    set db [::fttest::openDb sqlite]
+    ::fttest::applySchema $db $prefix {title body}
+    ::fttest::seed $db $prefix
+} -body {
+    ::tpersist::_raw $db "INSERT OR REPLACE INTO ${prefix}__products(sku, doc_number, title) VALUES ('A', 88, 'canvas')"
+    # Reuse the old document ID to detect stale terms from the replaced row.
+    db_execute $db [db_values [db_insert products] {sku E doc_number 70 title leather}] -prefix $prefix
+    list [::fttest::hits $db $prefix linen] [::fttest::hits $db $prefix canvas] [::fttest::hits $db $prefix leather]
+} -cleanup {::fttest::closeDb $db $prefix} -result {{} A E}
+
+test fulltext-mysql-interruption {retry verifies pending objects before adopting or replacing them} -constraints ft_mysql -setup {
+    set prefix [::fttest::prefix]
+    set db [::fttest::openDb mysql]
+    set physical ${prefix}__products
+    ::fttest::applySchema $db $prefix {title body}
+    ::fttest::seed $db $prefix
+    set catalog [::tpersist::_ftsCatalog $db $physical]
+    set row {WHERE base_name=:base AND field_name='search'}
+    set key [dict create base $physical]
+} -body {
+    # Simulate a disconnect after claiming a name. An unrelated generated
+    # FULLTEXT column with the same physical names must survive the retry.
+    ::tpersist::_raw $db "UPDATE $catalog SET phase='creating',sources='category',signature='' $row" $key
+    set conflict [catch {::fttest::applySchema $db $prefix category -additive true} message options]
+    set original [::fttest::hits $db $prefix linen]
+    ::tpersist::_raw $db "UPDATE $catalog SET sources='title body' $row" $key
+    ::fttest::applySchema $db $prefix {title body} -additive true
+
+    # The replacement ALTER committed, but recording its new signature did not.
+    set old [dict get [::tpersist::_ftsRecords $db $physical] search signature]
+    ::fttest::applySchema $db $prefix category -additive true
+    ::tpersist::_raw $db "UPDATE $catalog SET phase='replacing',signature=:old $row" [dict merge $key [dict create old $old]]
+    ::fttest::applySchema $db $prefix category -additive true
+    list $conflict [dict get $options -errorcode] $original [::fttest::hits $db $prefix timber]
+} -cleanup {::fttest::closeDb $db $prefix} -result {1 {TPERSIST SCHEMA} A C}
+
+test fulltext-mysql-drop {failed table drops keep searches intact and successful drops can finish catalog cleanup on retry} -constraints ft_mysql -setup {
+    set prefix [::fttest::prefix]
+    set db [::fttest::openDb mysql]
+    set physical ${prefix}__products
+    ::fttest::applySchema $db $prefix {title}
+    ::fttest::seed $db $prefix
+    set child [db_define_table product_refs {sku {type varchar length 20}} \
+        -foreign_keys {{columns sku table products referenced_columns sku}}]
+    db_create_table $db $child -prefix $prefix
+} -body {
+    set rejected [catch {db_drop_table $db products -prefix $prefix}]
+    set intact [::fttest::hits $db $prefix linen]
+    db_drop_table $db product_refs -prefix $prefix
+    # Simulate interruption just after the successful native DROP.
+    ::tpersist::_raw $db "DROP TABLE [::tpersist::_quote $physical mysql]"
+    set stale [dict exists [::tpersist::_ftsRecords $db $physical] search]
+    db_drop_table $db products -prefix $prefix -if_exists true
+    list $rejected $intact $stale [::tpersist::_ftsRecords $db $physical]
+} -cleanup {
+    db_drop_table $db product_refs -prefix $prefix -if_exists true
+    ::fttest::closeDb $db $prefix
+} -result {1 A 1 {}}
+
+namespace delete ::fttest
+::tcltest::cleanupTests

@@ -250,4 +250,83 @@ test select-source-invalid {reject malformed statements, unknown widths and conf
     list $errors [catch {db_values $copy {a 1}}] [catch {db_insert_select $values a [db_select src -columns a]}]
 } -setup {set errors {}} -result {{1 1 1 1} 1 1}
 
+test compile-match-names {offline compilation resolves prefixed, schema-qualified join aliases} -body {
+    set q [db_select [db_table shops -as s] -expr {MATCH_SCORE(p.search, :q) AS relevance}]
+    set q [db_join $q [db_table products -schema shopdb -as p] -expr {p.shop = s.id}]
+    set q [db_where $q -expr {p.search MATCH :q}]
+    set q [db_order_by $q -expr {relevance DESC, p.id}]
+    set fts [::tpersist::_ftsName app__products search fts]
+    set keys [::tpersist::_ftsName app__products search keys]
+    set column [::tpersist::_ftsName app__products search column]
+    set needles [dict create sqlite [list [format {"shopdb"."%s"} $fts] [format {"shopdb"."%s"} $keys] {"p"._rowid_}] \
+        postgresql [list [format {"p"."%s"} $column] pg_catalog.ts_rank pg_catalog.websearch_to_tsquery] \
+        mysql [list "MATCH(`p`.`$column`)" {IN NATURAL LANGUAGE MODE}]]
+    set results {}
+    dict for {dialect strings} $needles {
+        set compiled [db_compile $q -dialect $dialect -prefix app]
+        set ok 1
+        foreach needle $strings {
+            if {[string first $needle [dict get $compiled sql]] < 0} {set ok 0}
+        }
+        lappend results $ok [dict get $compiled required] [dict get $compiled types]
+    }
+    set results
+} -result {1 q {p1 text} 1 q {p1 text} 1 q {p1 text}}
+
+test compile-match-bindings {the same input binds independently as natural language and ordinary text} -body {
+    set q [db_select products -expr {MATCH_SCORE(search, :q) AS relevance}]
+    set q [db_where $q -expr {search MATCH :q OR title = :q}]
+    set input {été -東京 (OR) "quartz"*}
+    set expected [dict create sqlite {"été" OR "東京" OR "OR" OR "quartz"} \
+        postgresql {"été" OR "東京" OR "OR" OR "quartz"} mysql {été 東京 OR quartz}]
+    set results {}
+    dict for {dialect encoded} $expected {
+        set c [db_compile $q -dialect $dialect -params [dict create q $input]]
+        set missing [db_compile $q -dialect $dialect]
+        set null [db_compile $q -dialect $dialect -nulls q]
+        lappend results [expr {[dict get $c params] eq [dict create p1 $encoded p2 $input]}] \
+            [regexp -all {:p1} [dict get $c sql]] [dict get $missing required] [dict get $null params]
+    }
+    set results
+} -result {1 2 q {} 1 2 q {} 1 2 q {}}
+
+test compile-match-unicode {UTF-8 combining marks and supplementary letters stay in their words} -body {
+    set astral [encoding convertfrom utf-8 [binary decode hex f0a08080]]
+    set decomposed "cafe\u0301"
+    set input "$decomposed,किताब $astral"
+    set q [db_where [db_select products] -expr {search MATCH :q}]
+    set results {}
+    foreach dialect {sqlite postgresql mysql} {
+        set encoded [dict get [db_compile $q -dialect $dialect -params [dict create q $input]] params p1]
+        set expected [expr {$dialect eq "mysql" ? "$decomposed किताब $astral" : [format {"%s" OR "किताब" OR "%s"} $decomposed $astral]}]
+        lappend results [string equal $expected $encoded]
+    }
+    set results
+} -result {1 1 1}
+
+test compile-match-empty {punctuation-only input produces an empty backend search} -body {
+    set q [db_where [db_select products] -expr {search MATCH :q}]
+    set results {}
+    foreach dialect {sqlite postgresql mysql} {
+        lappend results [dict get [db_compile $q -dialect $dialect -params {q {(-"*+)}}] params p1]
+    }
+    set results
+} -result [list {""} {} {}]
+
+test compile-reserved-projection-alias {a private full-text name cannot silently disappear from results} -body {
+    set query [db_select products -columns [list [db_alias [db_col id] __TPFTS_column_example]]]
+    set errors {}
+    foreach dialect {sqlite postgresql mysql} {
+        catch {db_compile $query -dialect $dialect} message options
+        lappend errors [dict get $options -errorcode]
+    }
+    set errors
+} -result {{TPERSIST VALIDATION} {TPERSIST VALIDATION} {TPERSIST VALIDATION}}
+
+test compile-match-invalid {unknown qualifiers and invalid field references are rejected offline} -body {
+    set bad [db_match [db_col {}] [db_value text]]
+    list [catch {db_compile [db_where [db_select products] $bad]}] \
+        [catch {db_compile [db_where [db_select products] -expr {unknown.search MATCH :query}]}]
+} -result {1 1}
+
 ::tcltest::cleanupTests

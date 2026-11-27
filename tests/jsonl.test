@@ -289,5 +289,25 @@ test jsonl-snapshot-postgresql {Concurrent committed writes cannot enter a later
     jsonlCleanup $source $target postgresql
 } -result {600 1}
 
+foreach {dialect constraint} {sqlite jsonlSqlite postgresql jsonlPostgres} {
+    test jsonl-fulltext-$dialect {Archive logical search fields and recreate them from UTF-8 rows} -constraints $constraint -setup {
+        lassign [jsonlSetup $dialect] source target
+        set path [file join $::tcltest::temporaryDirectory jsonl-backup.jsonl]
+        set search [dict create type fulltext document_id doc_no columns {title body}]
+        db_create_table $source [db_define_table notes {
+            doc_no {type integer not_null 1 unique 1}
+            title {type text} body {type text}
+        } -virtual [dict create search $search heading [dict replace $search columns title]]]
+        db_execute $source [db_values [db_insert notes] {doc_no 71 title printemps body Αθήνα}]
+    } -body {
+        set exported [db_export_jsonl $source $path -tables notes]
+        set archive [jsonlRead $path]
+        set imported [db_import_jsonl $target $path]
+        set query [db_where [db_select notes -columns doc_no] -expr {search MATCH :q AND heading MATCH :h}]
+        set result [db_execute $target $query -params {q Αθήνα h printemps}]
+        list $exported $imported [expr {[string first __tpfts_ $archive] < 0}] [dict get $result rows]
+    } -cleanup {jsonlCleanup $source $target $dialect} -result {{notes 1} {notes 1} 1 {{doc_no 71}}}
+}
+
 foreach proc {jsonlSetup jsonlCleanup jsonlRead jsonlWrite} {rename $proc {}}
 ::tcltest::cleanupTests

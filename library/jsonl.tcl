@@ -88,8 +88,8 @@ proc ::tpersist::db_export_jsonl {handle path args} {
             set columns [dict get $definition columns]
             set table [db_table $name -schema $schema]
             dict set counts $name 0
-            set sql "SELECT * FROM [_tableName $table $dialect]"
             if {$dialect eq "postgresql"} {
+                set sql "SELECT [_columnList [dict keys $columns] $columns $dialect] FROM [_tableName $table $dialect]"
                 _raw $handle "DECLARE tpersist_jsonl NO SCROLL CURSOR FOR $sql"
                 try {
                     while {1} {
@@ -104,7 +104,7 @@ proc ::tpersist::db_export_jsonl {handle path args} {
                     }
                 } finally {_raw $handle {CLOSE tpersist_jsonl}}
             } else {
-                db_foreach_row $handle row [db_select $table] {
+                db_foreach_row $handle row [db_select $table -columns [dict keys $columns]] {
                     _jsonlRow $channel $name $columns $row
                     dict incr counts $name
                     if {[dict get $counts $name] % 256 == 0} {flush $channel; _jsonlCheck $options $temporary}
@@ -208,12 +208,20 @@ proc ::tpersist::db_import_jsonl {handle path args} {
             }
             dict set targets $name $target
             if {$name ni $available} {
-                db_create_table $handle $target
+                db_create_table $handle [dict remove $target virtual]
             } else {
                 if {$dialect eq "postgresql"} {_raw $handle "LOCK TABLE [_tableName $target $dialect] IN ACCESS EXCLUSIVE MODE"}
                 set live [_backupTable $handle $schema $name]
                 set liveDoc [_schemaDocument [::tjson::typed_to_json [list M [dict create version {N 1} tables [list L [list $live]]]]]]
-                if {[db_schema_sql [lindex [dict get $liveDoc tables] 0] -dialect $dialect] ne [db_schema_sql $definition -dialect $dialect]} {_fail SCHEMA "existing table does not match archived schema: $name"}
+                set liveTable [lindex [dict get $liveDoc tables] 0]
+                if {[db_schema_sql $liveTable -dialect $dialect] ne [db_schema_sql $definition -dialect $dialect]} {_fail SCHEMA "existing table does not match archived schema: $name"}
+                if {[dict exists $liveTable virtual]} {
+                    dict for {field spec} [dict get $liveTable virtual] {
+                        if {![dict exists $definition virtual $field] || $spec ne [dict get $definition virtual $field]} {
+                            _fail SCHEMA "existing full-text field does not match archived schema: $name.$field"
+                        }
+                    }
+                }
                 foreach index [dict get $liveDoc indexes] {
                     if {$index ni [dict get $document indexes]} {_fail SCHEMA "existing index does not match archived schema: [dict get $index name]"}
                     lappend existingIndexes [dict get $index name]
@@ -292,6 +300,9 @@ proc ::tpersist::db_import_jsonl {handle path args} {
             set name [dict get [_tableParts [dict get $index table]] name]
             if {$name ni $selected || [dict get $index name] in $existingIndexes} continue
             db_create_index $handle [dict get $index name] [dict get $targets $name] [dict get $index columns] -unique [dict get $index unique] -descending [dict get $index descending]
+        }
+        dict for {name target} $targets {
+            if {[dict exists $target virtual]} {_ftsApply $handle $target 0}
         }
         if {$dialect eq "postgresql"} {
             dict for {name target} $targets {

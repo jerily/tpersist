@@ -100,7 +100,7 @@ static int build(TpContext *c, const char *cmd, int objc, Tcl_Obj *const v[], Tc
         d=TpNode(c,cmd);
         TpPut(c,d,!strcmp(cmd,"param")?"name":"value",v[1]);
         TpPut(c,d,"type",objc==4?v[3]:TpStr(c,"auto"));
-    } else if (contains("eq ne lt le gt ge like add sub mul div",cmd)) {
+    } else if (contains("eq ne lt le gt ge like match match_score add sub mul div",cmd)) {
         ARGS(3,3,"leftExpression rightExpression"); d=TpNode(c,cmd);
         TpPut(c,d,"left",v[1]); TpPut(c,d,"right",v[2]);
     } else if (!strcmp(cmd,"in") || !strcmp(cmd,"not_in")) {

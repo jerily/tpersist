@@ -20,7 +20,7 @@ int Tpersist_Init(Tcl_Interp *interp) {
     Tcl_ResetResult(interp);
     if(!Tcl_CreateNamespace(interp,"::tpersist",NULL,NULL)) return TCL_ERROR;
     static const char *commands[]={"col","table","star","null","value","param",
-        "eq","ne","lt","le","gt","ge","like","add","sub","mul","div",
+        "eq","ne","lt","le","gt","ge","like","match","match_score","add","sub","mul","div",
         "in","not_in","and","or","not","is_null","is_not_null","asc","desc",
         "sum","avg","min","max","count","alias","select","insert","update","delete","on_conflict",
         "where","having","order_by","group_by","returning","limit","offset","distinct",

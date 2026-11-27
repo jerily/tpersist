@@ -48,6 +48,7 @@ without changing this number. There is no migration ledger.
 | Table `unique` | Optional array of column-name arrays. |
 | Table `foreign_keys` | Optional array of foreign-key objects. |
 | Table `indexes` | Optional array of indexes on this table. |
+| Table `virtual` | Optional object mapping full-text field names to their definitions. |
 | Index `name`, `columns` | Required name and ordered array of column names. |
 | Index `unique` | Optional boolean, default `false`. |
 | Index `descending` | Optional array naming indexed columns to sort descending. Others ascend. |
@@ -96,7 +97,8 @@ index names for portability.
 - `indexes`: dictionaries with `name`, `table`, `columns`, `unique`, and `descending`.
 
 Reading does no database work. Pass a returned table to `db_schema_sql` to inspect
-its DDL for a selected dialect.
+its base-table DDL for a selected dialect. `db_create_table` and `db_apply_schema`
+also install the management objects for declared full-text fields.
 
 `db_apply_schema connection filename ?-additive boolean? ?-prefix name?` validates every definition for the connection's
 dialect, then invokes `db_create_table` for all tables and `db_create_index` for
@@ -117,8 +119,7 @@ Set it to `true` to add missing columns to existing tables from the same JSON fi
 ```
 
 Column additions are validated before any DDL and run before index creation.
-Existing column types/defaults and index definitions are left intact; removing
-an entry never drops it. New columns may be nullable or have a literal default.
+Existing ordinary columns and indexes keep their definitions. New columns may be nullable or have a literal default.
 A new NOT NULL column requires a non-null default. Adding primary-key, identity,
 inline UNIQUE, or foreign-key columns requires a migration; a separate named
 unique index is supported. These limits apply only to existing tables.
@@ -130,6 +131,63 @@ serialized by the caller.
 
 Malformed JSON raises `TPERSIST JSON`; invalid file structure raises
 `TPERSIST SCHEMA`. Existing DDL validation and database errors retain their categories.
+
+## Full-text fields
+
+This table indexes its title and description as one searchable document.
+
+```json
+{
+  "version": 1,
+  "tables": [{
+    "name": "products",
+    "columns": {
+      "id": {"type": "integer", "primary_key": true},
+      "title": {"type": "varchar", "length": 200},
+      "description": {"type": "text"}
+    },
+    "virtual": {
+      "search": {"type": "fulltext", "document_id": "id", "columns": ["title", "description"]}
+    }
+  }]
+}
+```
+
+Every full-text field requires an explicit, stable integer document ID in all three
+databases. Declare an `integer` or `bigint` single-column primary key, or a
+separate `not_null`, single-column unique key. On SQLite, declare `not_null`
+explicitly for a `bigint` primary key. A table with a business key can supply a
+separate integer ID. Allocate each ID to one document and keep it across edits.
+For an existing table that lacks such a key, populate and constrain the ID
+before applying the full-text declaration.
+The source list must contain distinct, existing `text` or `varchar` columns.
+SQL NULL contributes empty text. A table can declare several search fields.
+
+Use a UTF-8 database with SQLite FTS5 or PostgreSQL, or InnoDB with
+`utf8mb4` source columns on MySQL 8. SQLite search tables require ordinary
+rowid tables and reserve `_rowid_`. The `__tpfts_` namespace is reserved
+for implementation objects. Use the declared spelling of table and virtual
+field names and apply the same table prefix when running a query.
+
+Schema application builds each new index over existing documents. SQLite
+uses FTS5, a view mapping the current row to its declared document ID, and
+write triggers. External SQLite connections using `INSERT OR REPLACE` must
+enable `PRAGMA recursive_triggers = ON`, as tpersist connections do.
+PostgreSQL maintains a stored `tsvector` with a GIN index. MySQL maintains
+an invisible stored text column with a single-column `FULLTEXT` index.
+InnoDB makes full-text changes searchable at commit.
+
+Reapplying a healthy definition avoids a rebuild. Ordinary application reports
+a changed or incomplete installed field. With `-additive true`, the declarations
+for **each table present in the file** are authoritative. Changing the source
+list rebuilds that field, removing a declaration drops its search objects, and
+omitting `virtual` removes all managed search fields on that table. Base rows
+are retained. `db_drop_table` also cleans up the table's full-text objects.
+`tpersist` records ownership per physical schema and table and reports conflicts
+with unrelated objects. SQLite and PostgreSQL rebuild transactionally. MySQL
+records its progress so a failed apply can be retried with the same schema.
+
+See the [query example](api.md#full-text-search).
 
 ## Future migrations
 

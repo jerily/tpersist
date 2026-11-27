@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "tables": [{
+    "name": "products",
+    "columns": {
+      "sku": {"type": "varchar", "length": 20, "primary_key": true},
+      "doc_number": {"type": "integer", "unique": true, "not_null": true},
+      "title": {"type": "text", "not_null": true},
+      "body": {"type": "text"},
+      "category": {"type": "text"}
+    },
+    "virtual": {
+      "search": {
+        "type": "fulltext",
+        "document_id": "doc_number",
+        "columns": ["title", "body"]
+      }
+    }
+  }]
+}

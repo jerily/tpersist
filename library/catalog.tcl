@@ -45,11 +45,12 @@ proc ::tpersist::db_tables {handle args} {
             AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d WHERE d.classid = 'pg_catalog.pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')
             ORDER BY c.relname} [dict create schema $schema]]
     }
-    if {$marker eq {}} {return [lmap row $rows {dict get $row name}]}
+    set managed [_ftsManagedTables $handle $schema]
     set length [string length $marker]
     return [lmap row $rows {
         set name [dict get $row name]
-        if {[string first $marker $name] != 0 || $name eq $marker} continue
+        if {$name in $managed} continue
+        if {$marker ne {} && ([string first $marker $name] != 0 || $name eq $marker)} continue
         string range $name $length end
     }]
 }
@@ -103,6 +104,17 @@ proc ::tpersist::_backupDefault {value type dialect} {
 proc ::tpersist::_backupTable {handle schema name} {
     set dialect [db_dialect $handle]
     set params [dict create schema $schema name $name]
+    set table [db_table $name -schema $schema]
+    set virtual [_ftsDefinitions $handle $table]
+    set owned {}
+    set virtualJson {}
+    dict for {field spec} $virtual {
+        foreach role {ai au ad column idx} {
+            dict set owned [_ftsName $name $field $role] $role
+        }
+        dict set virtualJson $field [list M [dict create type {S fulltext} \
+            document_id [list S [dict get $spec document_id]] columns [_jsonStrings [dict get $spec columns]]]]
+    }
     set columns {}; set pk {}; set unique {}; set indexes {}; set foreign {}
     if {$dialect eq "sqlite"} {
         set tableSql [dict get [lindex [_raw $handle "SELECT sql FROM [_quote $schema sqlite].sqlite_schema WHERE type = 'table' AND name = :name" $params] 0] sql]
@@ -112,8 +124,11 @@ proc ::tpersist::_backupTable {handle schema name} {
         if {[regexp -nocase {\m(CHECK|COLLATE|GENERATED|DEFERRABLE|WITHOUT|STRICT|VIRTUAL|CONFLICT)\M} $syntax]} {
             _fail UNSUPPORTED "table $name uses SQLite DDL outside the portable schema format"
         }
-        if {[llength [_raw $handle "SELECT 1 FROM [_quote $schema sqlite].sqlite_schema WHERE type = 'trigger' AND tbl_name = :name" $params]]} {
-            _fail UNSUPPORTED "table $name has triggers"
+        foreach row [_raw $handle "SELECT name FROM [_quote $schema sqlite].sqlite_schema WHERE type = 'trigger' AND tbl_name = :name" $params] {
+            set trigger [dict get $row name]
+            if {![dict exists $owned $trigger] || [dict get $owned $trigger] ni {ai au ad}} {
+                _fail UNSUPPORTED "table $name has triggers"
+            }
         }
         foreach row [_raw $handle {SELECT * FROM pragma_table_xinfo(:name, :schema) ORDER BY cid} $params] {
             if {[dict get $row hidden]} {_fail UNSUPPORTED "generated columns are not supported in backups"}
@@ -163,7 +178,6 @@ proc ::tpersist::_backupTable {handle schema name} {
             }
         }
     } else {
-        set table [db_table $name -schema $schema]
         dict set params relation [_tableName $table postgresql]
         # This format cannot faithfully represent these features. Never silently
         # omit them from a backup advertised as sufficient for reconstruction.
@@ -181,8 +195,9 @@ proc ::tpersist::_backupTable {handle schema name} {
             FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
             LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
             WHERE a.attrelid = :relation::regclass AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum} $params] {
-            if {[dict get $row generated] ne {} || [dict get $row custom_collation]} {_fail UNSUPPORTED "generated columns and custom collations are not supported in backups"}
             set column [dict get $row name]
+            if {[dict exists $owned $column] && [dict get $owned $column] eq "column" && [dict get $row generated] eq "s" && [dict get $row type] eq "tsvector"} continue
+            if {[dict get $row generated] ne {} || [dict get $row custom_collation]} {_fail UNSUPPORTED "generated columns and custom collations are not supported in backups"}
             set spec [_backupType [dict get $row type]]
             if {[dict get $row not_null]} {dict set spec not_null {BOOL 1}}
             if {[dict get $row identity] ne {}} {
@@ -239,6 +254,8 @@ proc ::tpersist::_backupTable {handle schema name} {
             ORDER BY ic.relname, s.n} $params]
         set groups {}
         foreach row $rows {
+            set index [dict get $row name]
+            if {[dict exists $owned $index] && [dict get $owned $index] eq "idx"} continue
             if {[dict get $row unsupported] || [dict get $row descending] != [dict get $row nulls_first] || ![dict exists $row column_name]} {_fail UNSUPPORTED "index cannot be represented by a portable JSON schema"}
             dict lappend groups [dict get $row name] $row
         }
@@ -249,6 +266,7 @@ proc ::tpersist::_backupTable {handle schema name} {
         }
     }
     set result [dict create name [list S $name] columns [list M $columns]]
+    if {[dict size $virtualJson]} {dict set result virtual [list M $virtualJson]}
     if {[llength $pk]} {dict set result primary_key [_jsonStrings $pk]}
     if {[llength $unique]} {dict set result unique [list L $unique]}
     if {[llength $indexes]} {dict set result indexes [list L $indexes]}

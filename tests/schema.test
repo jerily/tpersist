@@ -71,4 +71,39 @@ foreach {label script pattern} {
     test schema-invalid-$label {invalid schema definitions are rejected} -body $script -returnCodes error -match glob -result $pattern
 }
 
+test schema-fulltext-document-contract {every full-text field declares a stable integer ID and text sources} -body {
+    set sources [dict create title {type text} amount {type real}]
+    set failures {}
+    foreach {key spec} {
+        {type varchar length 20 primary_key 1} {type fulltext document_id id columns title}
+        {type integer not_null 1}              {type fulltext document_id id columns title}
+        {type integer unique 1}                {type fulltext document_id id columns title}
+        {type integer primary_key 1}           {type fulltext columns title}
+        {type integer primary_key 1}           {type fulltext document_id id columns amount}
+        {type integer primary_key 1}           {type fulltext document_id id columns {title title}}
+    } {
+        lappend failures [catch {db_define_table products [dict merge $sources [dict create id $key]] \
+            -virtual [dict create search $spec]}]
+    }
+    set def [db_define_table products [dict merge $sources {id {type bigint primary_key 1}}] \
+        -virtual {search {type fulltext document_id id columns title}}]
+    lappend failures [catch {db_schema_sql $def -dialect sqlite}]
+} -result {1 1 1 1 1 1 1}
+
+::tcltest::testConstraint schemaSqlite [expr {![catch {package require tpersist-sqlite}]}]
+test schema-fulltext-live-key {existing SQLite tables must actually enforce the declared key} -constraints schemaSqlite -setup {
+    set db [db_connect -database :memory: -autobegin false]
+} -body {
+    set def [db_define_table docs {id {type integer primary_key 1} body {type text}} \
+        -virtual {search {type fulltext document_id id columns body}}]
+    set errors {}
+    foreach ddl {{id INTEGER NOT NULL, body TEXT} {id INTEGER PRIMARY KEY DESC, body TEXT}} {
+        ::tpersist::_raw $db "CREATE TABLE docs ($ddl)"
+        catch {db_create_table $db $def -if_not_exists true} message options
+        lappend errors [dict get $options -errorcode] [db_tables $db]
+        db_drop_table $db docs
+    }
+    set errors
+} -cleanup {db_disconnect $db} -result {{TPERSIST SCHEMA} docs {TPERSIST SCHEMA} docs}
+
 ::tcltest::cleanupTests

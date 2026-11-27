@@ -5,6 +5,12 @@
  */
 #include "internal.h"
 #include <math.h>
+#include "search_unicode.h"
+
+typedef struct QueryScope {
+    Tcl_Obj *statement;
+    struct QueryScope *outer;
+} QueryScope;
 
 typedef struct {
     TpContext c;
@@ -12,7 +18,8 @@ typedef struct {
     const char *dialect;
     Tcl_Obj *params, *types, *bindings, *nullNames, *required, *named, *used;
     unsigned int serial;
-    Tcl_Obj *prefix, *writeTarget;
+    Tcl_Obj *prefix, *writeTarget, *searchNamed;
+    QueryScope *scope;
     int conflictUpdate;
     int depth;
 } Compiler;
@@ -48,9 +55,15 @@ static int keys(Compiler *p,Tcl_Obj *d,const char *allowed) {
     Tcl_DictObjDone(&search); return TCL_OK;
 }
 
-static int identifier(Compiler *p,Tcl_Obj *o) {
+static int validIdentifier(Compiler *p,Tcl_Obj *o) {
     TpSize n; const char *s=Tcl_GetStringFromObj(o,&n);
     if(!n || memchr(s,0,(size_t)n) || strstr(s,"\xc0\x80")) return TpError(&p->c,"VALIDATION","identifiers must be nonempty and contain no NUL characters");
+    return TCL_OK;
+}
+
+static int identifier(Compiler *p,Tcl_Obj *o) {
+    TRY(validIdentifier(p,o));
+    TpSize n; const char *s=Tcl_GetStringFromObj(o,&n);
     char quote=!strcmp(p->dialect,"mysql")?'`':'"';
     Tcl_DStringAppend(&p->sql,&quote,1);
     for(TpSize i=0;i<n;i++) {
@@ -239,37 +252,83 @@ static int placeholder(Compiler *p,Tcl_Obj *slot,const char *type,int numeric) {
     return TCL_OK;
 }
 
-static int bind(Compiler *p,Tcl_Obj *value,Tcl_Obj *name,const char *type,int numeric) {
+/* Full-text engines have their own query grammars. Only Unicode word terms
+ * survive this conversion. Quoting each SQLite/PostgreSQL term also makes a
+ * word such as OR literal even though it is reserved in those grammars. */
+static Tcl_Obj *searchText(Compiler *p, Tcl_Obj *value) {
+    TpSize length;
+    const Tcl_UniChar *chars = Tcl_GetUnicodeFromObj(value, &length);
+    int mysql = !strcmp(p->dialect, "mysql");
+    Tcl_Obj *result = TpOwn(&p->c, Tcl_NewObj());
+    TpSize start = 0;
+    int inTerm = 0, hadTerm = 0;
+    for (TpSize i = 0; ; ) {
+        TpSize next = i;
+        int word = 0;
+        if (i < length) {
+            int ch = chars[next++];
+#if TCL_MAJOR_VERSION < 9
+            if (ch >= 0xd800 && ch <= 0xdbff && next < length &&
+                    chars[next] >= 0xdc00 && chars[next] <= 0xdfff) {
+                ch = 0x10000 + ((ch - 0xd800) << 10) + (chars[next++] - 0xdc00);
+            }
+#endif
+            word = searchWordCharacter(ch);
+        }
+        if (word && !inTerm) start = i;
+        if (!word && inTerm) {
+            if (hadTerm) Tcl_AppendToObj(result, mysql ? " " : " OR ", -1);
+            if (!mysql) Tcl_AppendToObj(result, "\"", 1);
+            Tcl_AppendUnicodeToObj(result, chars + start, i - start);
+            if (!mysql) Tcl_AppendToObj(result, "\"", 1);
+            hadTerm = 1;
+        }
+        if (i == length) break;
+        inTerm = word;
+        i = next;
+    }
+    /* An empty SQLite MATCH expression is a syntax error; an empty phrase
+     * is a valid FTS5 query that matches no documents. */
+    if (!hadTerm && !strcmp(p->dialect, "sqlite")) Tcl_AppendToObj(result, "\"\"", 2);
+    return result;
+}
+
+static int bindValue(Compiler *p,Tcl_Obj *value,Tcl_Obj *name,const char *type,int numeric,int search) {
     TRY(validType(p,type));
-    Tcl_Obj *slot=NULL;
+    Tcl_Obj *slot=NULL, *priorType=NULL;
+    Tcl_Obj *names=search ? p->searchNamed : p->named;
+    const char *boundType=search ? "text" : type;
     if(name) {
         TpSize len; const char *s=Tcl_GetStringFromObj(name,&len);
         if(!len || memchr(s,0,(size_t)len)) return TpError(&p->c,"VALIDATION","parameter name must not be empty or contain NUL");
-        Tcl_DictObjGet(NULL,p->named,name,&slot);
-        if(slot) {
-            Tcl_Obj *oldType=NULL; Tcl_DictObjGet(NULL,p->types,slot,&oldType);
-            if(strcmp(Tcl_GetString(oldType),type)) return TpError(&p->c,"TYPE","repeated named parameter has conflicting types");
-            return placeholder(p,slot,type,numeric);
-        }
+        Tcl_DictObjGet(NULL,p->used,name,&priorType);
+        if(priorType && strcmp(Tcl_GetString(priorType),type))
+            return TpError(&p->c,"TYPE","repeated named parameter has conflicting types");
+        Tcl_DictObjGet(NULL,names,name,&slot);
+        if(slot) return placeholder(p,slot,boundType,numeric);
     }
     char buf[48]; snprintf(buf,sizeof(buf),"p%u",++p->serial);
     slot=TpStr(&p->c,buf);
-    Tcl_DictObjPut(NULL,p->types,slot,TpStr(&p->c,type));
+    Tcl_DictObjPut(NULL,p->types,slot,TpStr(&p->c,boundType));
     if(name) {
         Tcl_Obj *nullFlag=NULL;
-        Tcl_DictObjPut(NULL,p->named,name,slot);
-        Tcl_DictObjPut(NULL,p->used,name,TpInt(&p->c,1));
+        Tcl_DictObjPut(NULL,names,name,slot);
+        Tcl_DictObjPut(NULL,p->used,name,TpStr(&p->c,type));
         Tcl_DictObjGet(NULL,p->bindings,name,&value);
         Tcl_DictObjGet(NULL,p->nullNames,name,&nullFlag);
         if(nullFlag) value=NULL;
-        else if(!value) Tcl_ListObjAppendElement(NULL,p->required,name);
+        else if(!value && !priorType) Tcl_ListObjAppendElement(NULL,p->required,name);
     }
     if(value) {
-        value=convert(p,value,type);
+        value=search ? searchText(p,value) : convert(p,value,type);
         if(!value) return TCL_ERROR;
         Tcl_DictObjPut(NULL,p->params,slot,value);
     }
-    return placeholder(p,slot,type,numeric);
+    return placeholder(p,slot,boundType,numeric);
+}
+
+static int bind(Compiler *p,Tcl_Obj *value,Tcl_Obj *name,const char *type,int numeric) {
+    return bindValue(p,value,name,type,numeric,0);
 }
 
 #define PROJECTION TP_PROJECTION
@@ -298,9 +357,146 @@ static int selectSource(Compiler *p, Tcl_Obj *query, TpSize width, int ensureWhe
     return statement(p, query, ensureWhere);
 }
 
+static int searchArgument(Compiler *p, Tcl_Obj *arg) {
+    Tcl_Obj *node = required(p,arg,"node");
+    if (!node) return TCL_ERROR;
+    const char *kind = Tcl_GetString(node);
+    int named = !strcmp(kind,"param");
+    ADD("COALESCE(");
+    if (!strcmp(kind,"null")) {
+        TRY(keys(p,arg,"node"));
+        ADD("NULL");
+    } else {
+        if (!named && strcmp(kind,"value"))
+            return TpError(&p->c,"VALIDATION","full-text queries require a text literal or parameter");
+        TRY(keys(p,arg,named ? "node name type" : "node value type"));
+        Tcl_Obj *type = required(p,arg,"type"), *value = required(p,arg,named ? "name" : "value");
+        if (!type || !value) return TCL_ERROR;
+        const char *t = Tcl_GetString(type);
+        if (strcmp(t,"text") && strcmp(t,"auto"))
+            return TpError(&p->c,"TYPE","full-text queries require text");
+        TRY(bindValue(p,named ? NULL : value,named ? value : NULL,t,0,1));
+    }
+    ADD(!strcmp(p->dialect,"sqlite") ? ", '\"\"')" : ", '')");
+    return TCL_OK;
+}
+
+static Tcl_Obj *tableQualifier(Compiler *p,Tcl_Obj *tableRef) {
+    Tcl_Obj *alias = TpGet(&p->c,tableRef,"alias");
+    return alias ? alias : required(p,tableRef,"name");
+}
+
+static int sameQualifier(Compiler *p,Tcl_Obj *left,Tcl_Obj *right) {
+    const char *a = Tcl_GetString(left), *b = Tcl_GetString(right);
+    if (!strcmp(p->dialect,"postgresql")) return !strcmp(a,b);
+    return Tcl_GetCharLength(left) == Tcl_GetCharLength(right)
+        && !Tcl_UtfNcasecmp(a,b,Tcl_GetCharLength(left));
+}
+
+/* A virtual field belongs to the FROM table unless its qualifier selects
+ * another visible table. Nested SELECTs may refer to an enclosing alias. */
+static Tcl_Obj *searchTable(Compiler *p,Tcl_Obj *wanted) {
+    for (QueryScope *scope = p->scope; scope; scope = scope->outer) {
+        Tcl_Obj *base = required(p,scope->statement,"table");
+        if (!base || !wanted) return base;
+        Tcl_Obj *alias = tableQualifier(p,base);
+        if (!alias || sameQualifier(p,alias,wanted)) return alias ? base : NULL;
+        Tcl_Obj *joins = TpGet(&p->c,scope->statement,"joins");
+        if (!joins) continue;
+        TpSize count;
+        Tcl_Obj **items;
+        if (Tcl_ListObjGetElements(p->c.interp,joins,&count,&items) != TCL_OK) return NULL;
+        for (TpSize i = 0; i < count; i++) {
+            Tcl_Obj *source = required(p,items[i],"table");
+            if (!source) return NULL;
+            alias = tableQualifier(p,source);
+            if (!alias || sameQualifier(p,alias,wanted)) return alias ? source : NULL;
+        }
+    }
+    TpError(&p->c,"VALIDATION","unknown full-text table qualifier");
+    return NULL;
+}
+
+/* Share the artifact naming function with the DDL layer. It operates only on
+ * identifiers and the role, so compilation never opens a connection. */
+static Tcl_Obj *searchName(Compiler *p,Tcl_Obj *base,Tcl_Obj *field,const char *role) {
+    Tcl_Obj *args[] = {TpStr(&p->c,"::tpersist::_ftsName"),base,field,TpStr(&p->c,role)};
+    if (Tcl_EvalObjv(p->c.interp,4,args,TCL_EVAL_GLOBAL) != TCL_OK) return NULL;
+    return TpOwn(&p->c,Tcl_DuplicateObj(Tcl_GetObjResult(p->c.interp)));
+}
+
+static int objectName(Compiler *p,Tcl_Obj *schema,Tcl_Obj *name) {
+    if (schema) { TRY(identifier(p,schema)); ADD("."); }
+    return identifier(p,name);
+}
+
+static int searchExpression(Compiler *p,Tcl_Obj *d,int score) {
+    TRY(keys(p,d,"node left right"));
+    Tcl_Obj *left = required(p,d,"left"), *query = required(p,d,"right");
+    if (!left || !query) return TCL_ERROR;
+    Tcl_Obj *node = required(p,left,"node"), *field = required(p,left,"name");
+    if (!node || !field) return TCL_ERROR;
+    if (strcmp(Tcl_GetString(node),"col"))
+        return TpError(&p->c,"VALIDATION","full-text search requires a virtual field");
+    TRY(keys(p,left,"node name table"));
+    Tcl_Obj *qual = TpGet(&p->c,left,"table");
+    TRY(validIdentifier(p,field));
+    if (qual) TRY(validIdentifier(p,qual));
+    /* The expression parser performs structural validation before a SELECT
+     * exists. Resolve aliases and physical artifact names during compilation. */
+    if (!p->scope) return searchArgument(p,query);
+    Tcl_Obj *ref = searchTable(p,qual);
+    if (!ref) return TCL_ERROR;
+    Tcl_Obj *base = required(p,ref,"name"), *outer = tableQualifier(p,ref);
+    if (!base || !outer) return TCL_ERROR;
+    if (p->prefix) base = physicalName(&p->c,p->prefix,base);
+    if (!base) return TCL_ERROR;
+
+    if (!strcmp(p->dialect,"sqlite")) {
+        Tcl_Obj *schema = TpGet(&p->c,ref,"schema");
+        Tcl_Obj *fts = searchName(p,base,field,"fts");
+        if (!fts) return TCL_ERROR;
+        Tcl_Obj *map = searchName(p,base,field,"keys");
+        if (!map) return TCL_ERROR;
+        /* Pick an inner alias distinct from the correlated outer name. */
+        const char *keyAlias = sameQualifier(p,outer,TpStr(&p->c,"_tp_key")) ? "_tp_key2" : "_tp_key";
+        const char *hitAlias = sameQualifier(p,outer,TpStr(&p->c,"_tp_hit")) ? "_tp_hit2" : "_tp_hit";
+        if (score) {
+            ADD("COALESCE((SELECT -"); ADD(hitAlias); ADD(".rank FROM ");
+            TRY(objectName(p,schema,fts)); ADD("("); TRY(searchArgument(p,query));
+            ADD(") AS "); ADD(hitAlias); ADD(" JOIN ");
+            TRY(objectName(p,schema,map)); ADD(" AS "); ADD(keyAlias);
+            ADD(" ON "); ADD(keyAlias); ADD(".docid = "); ADD(hitAlias); ADD(".rowid WHERE ");
+            ADD(keyAlias); ADD(".source_rowid = "); TRY(qualifier(p,outer)); ADD("._rowid_), 0.0)");
+        } else {
+            ADD("("); TRY(qualifier(p,outer)); ADD("._rowid_ IN (SELECT source_rowid FROM ");
+            TRY(objectName(p,schema,map)); ADD(" WHERE docid IN (SELECT rowid FROM ");
+            TRY(objectName(p,schema,fts)); ADD("("); TRY(searchArgument(p,query)); ADD("))))");
+        }
+        return TCL_OK;
+    }
+    Tcl_Obj *column = searchName(p,base,field,"column");
+    if (!column) return TCL_ERROR;
+    if (!strcmp(p->dialect,"mysql")) {
+        ADD(score ? "COALESCE(MATCH(" : "(MATCH(");
+        TRY(qualifier(p,outer)); ADD("."); TRY(identifier(p,column)); ADD(") AGAINST (");
+        TRY(searchArgument(p,query)); ADD(" IN NATURAL LANGUAGE MODE)");
+        ADD(score ? ", 0.0)" : " > 0)");
+    } else {
+        ADD(score ? "COALESCE(pg_catalog.ts_rank(" : "(");
+        TRY(qualifier(p,outer)); ADD("."); TRY(identifier(p,column));
+        ADD(score ? ", " : " @@ ");
+        ADD("pg_catalog.websearch_to_tsquery('pg_catalog.simple', ");
+        TRY(searchArgument(p,query));
+        ADD(score ? ")), 0.0)" : "))");
+    }
+    return TCL_OK;
+}
+
 static int exprBody(Compiler *p,Tcl_Obj *d,int flags) {
     Tcl_Obj *o=required(p,d,"node"); if(!o) return TCL_ERROR;
     const char *node=Tcl_GetString(o);
+    if(!strcmp(node,"match") || !strcmp(node,"match_score")) return searchExpression(p,d,!strcmp(node,"match_score"));
     if(!strcmp(node,"col")) {
         TRY(keys(p,d,"node name table"));
         Tcl_Obj *name=required(p,d,"name"), *qual=TpGet(&p->c,d,"table");
@@ -337,6 +533,8 @@ static int exprBody(Compiler *p,Tcl_Obj *d,int flags) {
         if(!(flags&PROJECTION)) return TpError(&p->c,"VALIDATION","aliases are only valid in projections");
         Tcl_Obj *expr=required(p,d,"expr"), *name=required(p,d,"name");
         if(!expr || !name) return TCL_ERROR;
+        if (Tcl_StringCaseMatch(Tcl_GetString(name),"__tpfts_*",1))
+            return TpError(&p->c,"VALIDATION","reserved full-text projection alias");
         TRY(expression(p,expr,0)); ADD(" AS "); return identifier(p,name);
     }
     static const char *binary[]={"eq","=","ne","<>","lt","<","le","<=","gt",">","ge",">=","like","LIKE","add","+","sub","-","mul","*","div","/",NULL};
@@ -364,7 +562,7 @@ static int exprBody(Compiler *p,Tcl_Obj *d,int flags) {
         if(!n) {
             Compiler check=*p; Tcl_DStringInit(&check.sql);
             check.params=TpDict(&p->c); check.types=TpDict(&p->c); check.named=TpDict(&p->c);
-            check.required=TpList(&p->c); check.used=TpDict(&p->c);
+            check.required=TpList(&p->c); check.used=TpDict(&p->c); check.searchNamed=TpDict(&p->c);
             int code=expression(&check,expr,0); Tcl_DStringFree(&check.sql); TRY(code);
             ADD(!strcmp(node,"in")?"(1 = 0)":"(1 = 1)"); return TCL_OK;
         }
@@ -403,7 +601,7 @@ int TpCheckExpression(TpContext *c,Tcl_Obj *node,int flags) {
     Compiler p={0};
     p.c=*c; p.dialect="sqlite";
     p.params=TpDict(c); p.types=TpDict(c); p.bindings=TpDict(c); p.nullNames=TpDict(c);
-    p.required=TpList(c); p.named=TpDict(c); p.used=TpDict(c);
+    p.required=TpList(c); p.named=TpDict(c); p.used=TpDict(c); p.searchNamed=TpDict(c);
     Tcl_DStringInit(&p.sql);
     int code=expression(&p,node,flags);
     Tcl_DStringFree(&p.sql);
@@ -434,7 +632,7 @@ static int pagination(Compiler *p,Tcl_Obj *d) {
     return TCL_OK;
 }
 
-static int statement(Compiler *p,Tcl_Obj *d,int ensureWhere) {
+static int statementBody(Compiler *p,Tcl_Obj *d,int ensureWhere) {
     Tcl_Obj *version=required(p,d,"version"), *kind=required(p,d,"kind"), *source=required(p,d,"table");
     if(!version || !kind || !source) return TCL_ERROR;
     int ver; TRY(Tcl_GetIntFromObj(p->c.interp,version,&ver));
@@ -567,13 +765,21 @@ static int statement(Compiler *p,Tcl_Obj *d,int ensureWhere) {
     return clause(p,d,"returning"," RETURNING ",", ",PROJECTION|STAR,0);
 }
 
+static int statement(Compiler *p,Tcl_Obj *d,int ensureWhere) {
+    QueryScope scope = {d, p->scope};
+    p->scope = &scope;
+    int code = statementBody(p,d,ensureWhere);
+    p->scope = scope.outer;
+    return code;
+}
+
 int TpCompileCmd(ClientData unused,Tcl_Interp *interp,int objc,Tcl_Obj *const objv[]) {
     (void)unused;
     if(objc<2 || objc%2!=0) { Tcl_WrongNumArgs(interp,1,objv,"statement ?-dialect sqlite|postgresql|mysql? ?-params dict? ?-nulls names? ?-prefix name?"); return TCL_ERROR; }
     Compiler p={0}; p.c.interp=interp; p.c.arena=Tcl_NewListObj(0,NULL); Tcl_IncrRefCount(p.c.arena);
     Tcl_DStringInit(&p.sql); p.dialect="sqlite";
     p.params=TpDict(&p.c); p.types=TpDict(&p.c); p.bindings=TpDict(&p.c); p.nullNames=TpDict(&p.c);
-    p.required=TpList(&p.c); p.named=TpDict(&p.c); p.used=TpDict(&p.c);
+    p.required=TpList(&p.c); p.named=TpDict(&p.c); p.used=TpDict(&p.c); p.searchNamed=TpDict(&p.c);
     int code=TCL_ERROR;
     for(int i=2;i<objc;i+=2) {
         const char *opt=Tcl_GetString(objv[i]);

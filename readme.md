@@ -33,6 +33,7 @@ JSON schema loading requires `tjson 1.0.27` or newer. JSONL backup and import re
 - [Runnable examples](https://github.com/jerily/tpersist-examples)
 - [API reference](docs/api.md)
 - [Versioned JSON schemas](docs/schema-json.md)
+- [UTF-8 full-text search with MATCH and relevance scoring](docs/api.md#full-text-search)
 - [JSONL schema and data backups](docs/jsonl.md)
 - [Optional TclOO layer](docs/oo.md)
 - [Building and testing](docs/development.md)
