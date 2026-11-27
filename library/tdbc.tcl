@@ -158,20 +158,11 @@ proc ::tpersist::_prepare {handle statement options} {
             $command paramtype $name $type
         }
         set rs [$command execute [dict get $compiled params]]
-        set columns [$rs columns]
-        # PostgreSQL expands wildcards to include stored generated vectors.
-        # The private namespace is reserved by the full-text schema contract.
-        set hidden {}
-        if {[dict get $c dialect] eq "postgresql"} {
-            set pattern {^__tpfts_column_[0-9a-f]{16}(?:#[0-9]+)?$}
-            set hidden [lsearch -all -inline -regexp $columns $pattern]
-            if {[llength $hidden]} {
-                set columns [lsearch -all -inline -not -regexp $columns $pattern]
-            }
-        }
-        if {[llength $columns] != [llength [lsort -unique $columns]]} {
+        try {
+            lassign [_result_columns $rs [dict get $c dialect]] columns hidden
+        } on error {message opts} {
             $rs close
-            _fail COLUMNS "duplicate result column names; use db_alias to give them unique names"
+            return -options $opts $message
         }
         return [list $command $rs $columns $hidden]
     } on error {message opts} {
@@ -180,41 +171,73 @@ proc ::tpersist::_prepare {handle statement options} {
     }
 }
 
-# Collect rows and metadata, then release statement resources.
-proc ::tpersist::db_execute {handle statement args} {
-    lassign [_prepare $handle $statement $args] command rs columns hidden
-    try {
-        set rowcount [expr {[dict get $statement kind] eq "select" ? -1 : [$rs rowcount]}]
-        set rows [$rs allrows -as dicts]
-        if {[llength $hidden]} {set rows [lmap row $rows {dict remove $row {*}$hidden}]}
-        return [dict create columns $columns rows $rows rowcount $rowcount]
-    } finally {
-        try { $rs close } finally { $command close }
+# Keep driver metadata in projection order, excluding PostgreSQL's private
+# generated search columns even when a wildcard selects them.
+proc ::tpersist::_result_columns {rs dialect} {
+    set columns [$rs columns]
+    set hidden {}
+    if {$dialect eq "postgresql"} {
+        set pattern {^__tpfts_column_[0-9a-f]{16}(?:#[0-9]+)?$}
+        set hidden [lsearch -all -inline -regexp $columns $pattern]
+        set columns [lsearch -all -inline -not -regexp $columns $pattern]
     }
+    if {[llength $columns] != [llength [lsort -unique $columns]]} {
+        _fail COLUMNS "duplicate result column names; use db_alias to give them unique names"
+    }
+    return [list $columns $hidden]
+}
+
+proc ::tpersist::db_execute {handle statement args} {
+    set rows {}
+    _read_rows $handle row $statement $args {lappend rows $row} columns rowcount
+    return [dict create columns $columns rows $rows rowcount $rowcount]
 }
 
 # Visit each row while preserving Tcl loop control.
 proc ::tpersist::db_foreach_row {handle varName statement args} {
     if {![llength $args]} { _fail ARGS "expected a row-processing script" }
-    set script [lindex $args end]
     set options [lrange $args 0 end-1]
+    if {[llength $options] % 2} { _fail ARGS "execution options must be name/value pairs" }
+    set columnsVar {}
+    if {[dict exists $options -columnsvariable]} {
+        set columnsVar [dict get $options -columnsvariable]
+        dict unset options -columnsvariable
+    }
+    tailcall ::tpersist::_read_rows $handle $varName $statement $options [lindex $args end] $columnsVar {}
+}
+
+proc ::tpersist::_read_rows {handle varName statement options script columnsVar rowcountVar} {
     upvar 1 $varName row
-    lassign [_prepare $handle $statement $options] command rs columns hidden
+    if {$columnsVar ne {}} {upvar 1 $columnsVar columns}
+    if {$rowcountVar ne {}} {upvar 1 $rowcountVar rowcount}
+    set dialect [db_dialect $handle]
+    lassign [_prepare $handle $statement $options] command rs names hidden
     set count 0
     try {
-        while {[$rs nextdict row]} {
-            if {[llength $hidden]} {set row [dict remove $row {*}$hidden]}
-            incr count
-            set code [catch {uplevel 1 $script} result opts]
-            switch -- $code {
-                0 - 4 { continue }
-                3 { break }
-                2 {
-                    dict incr opts -level
-                    return -options $opts $result
+        set columns $names
+        if {$rowcountVar ne {}} {
+            set rowcount [expr {[dict get $statement kind] eq "select" ? -1 : [$rs rowcount]}]
+        }
+        while {1} {
+            while {[$rs nextdict row]} {
+                if {[llength $hidden]} {set row [dict remove $row {*}$hidden]}
+                incr count
+                set code [catch {uplevel 1 $script} result opts]
+                switch -- $code {
+                    0 - 4 { continue }
+                    3 { return $count }
+                    2 {
+                        dict incr opts -level
+                        return -options $opts $result
+                    }
+                    default { return -options $opts $result }
                 }
-                default { return -options $opts $result }
             }
+            # SQLite TDBC reports statements executed internally by FTS5 as
+            # result-set boundaries, including before and between user rows.
+            if {$dialect ne "sqlite" || ![$rs nextresults]} {break}
+            lassign [_result_columns $rs $dialect] names hidden
+            if {[llength $names]} {set columns $names}
         }
     } finally {
         try { $rs close } finally { $command close }

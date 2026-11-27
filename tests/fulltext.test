@@ -86,7 +86,15 @@ foreach dialect {sqlite postgresql mysql} {
         set query [db_select $products -columns [list [db_col sku -table p] $rank]]
         set query [db_where $query [db_match [db_col search -table p] [db_param q]]]
         set query [db_order_by $query -expr {relevance DESC, p.sku ASC}]
-        set ranked [dict get [db_execute $db $query -params [dict create q $words] -prefix $prefix] rows]
+        set options [list -params [dict create q $words] -prefix $prefix]
+        set result [db_execute $db $query {*}$options]
+        set ranked [dict get $result rows]
+        set streamed {}
+        set visited [db_foreach_row $db hit $query {*}$options -columnsvariable names {
+            lappend streamed [list $names $hit]
+        }]
+        set expected [lmap hit $ranked {list {sku relevance} $hit}]
+        set first [db_foreach_row $db hit $query {*}$options {break}]
         set scores [lmap row $ranked {dict get $row relevance}]
         set both [lsort [lmap row $ranked {dict get $row sku}]]
         set descending [expr {[llength $scores] == 2 && [lindex $scores 0] >= [lindex $scores 1] && [lindex $scores 1] > 0}]
@@ -95,12 +103,13 @@ foreach dialect {sqlite postgresql mysql} {
         set scalar [db_where $scalar -expr {p.search MATCH :q OR p.sku = 'D'}]
         set outer [db_select products -columns [list [db_alias [db_scalar $scalar] count_hits]]]
         set row [lindex [dict get [db_execute $db [db_limit $outer 1] -params [dict create q $words] -prefix $prefix] rows] 0]
-        list $both $descending [dict get $all columns] [dict get $row count_hits] \
+        list [dict get $result columns] $visited [expr {$streamed eq $expected}] $first \
+            $both $descending [dict get $all columns] [dict get $row count_hits] \
             [::fttest::hits $db $prefix {café}] [::fttest::hits $db $prefix {") - () *}] \
             [::fttest::hits $db $prefix {}] [db_tables $db -prefix $prefix]
     } -cleanup {
         try {::fttest::closeDb $db $prefix} finally {if {$file ne {}} {::tcltest::removeFile $file}}
-    } -result {{A B} 1 {sku doc_number title body category} 3 A {} {} products}
+    } -result {{sku relevance} 2 1 1 {A B} 1 {sku doc_number title body category} 3 A {} {} products}
 
     test fulltext-four-byte-$dialect {supplementary UTF-8 survives search and row retrieval} -constraints [list ft_$dialect ft_tcl9] -setup {
         set prefix [::fttest::prefix]

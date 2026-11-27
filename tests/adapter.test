@@ -34,7 +34,15 @@ oo::class create ::fake::Statement {
     method close {} { my destroy }
 }
 oo::class create ::fake::Result {
-    constructor {} { incr ::fake::alive }
+    variable rows
+    constructor {} { incr ::fake::alive; set rows $::fake::rows }
+    method nextdict {var} {
+        upvar 1 $var row
+        if {![llength $rows]} {return 0}
+        set rows [lassign $rows row]
+        return 1
+    }
+    method nextresults {} {return 0}
     destructor { incr ::fake::alive -1 }
     method columns {} { return name }
     method rowcount {} { return 1 }
@@ -67,6 +75,19 @@ foreach {dialect quoted} {sqlite {"users"} postgresql {"users"} mysql {`users`}}
         [list prepare "SELECT [expr {$dialect eq "mysql" ? "`name`" : "\"name\""}] FROM $quoted WHERE ([expr {$dialect eq "mysql" ? "`age`" : "\"age\""}] = [expr {$dialect eq "postgresql" ? "CAST(:p1 AS BIGINT)" : ":p1"}])"] \
         {type p1 bigint} {execute {p1 21}}] {{name Alice}} 0]
 }
+
+test adapter-stream-columns {empty and NULL rows preserve reported projection metadata} -setup {
+    set db [fakeConnect postgresql]
+} -body {
+    set query [db_select users -columns name]
+    set ::fake::rows {}
+    set count [db_foreach_row $db row $query -columnsvariable columns {error "unexpected row"}]
+    set empty [list $count $columns]
+    set ::fake::rows [list {}]
+    set observed {}
+    db_foreach_row $db row $query -columnsvariable columns {lappend observed $columns $row}
+    list $empty $observed $::fake::alive
+} -cleanup {db_disconnect $db} -result {{0 name} {name {}} 0}
 
 test adapter-1.1 {explicit NULL passes an empty dictionary to TDBC} -setup {
     set db [fakeConnect postgresql]
