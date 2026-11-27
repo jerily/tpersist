@@ -349,9 +349,6 @@ proc ::tpersist::_createTableSql {definition dialect ifNotExists} {
     append sql [_tableName $definition $dialect] " (" [join $pieces {, }] ")"
     if {$dialect eq "mysql"} {
         append sql { ENGINE=InnoDB}
-        if {[dict exists $definition virtual] && [dict size [dict get $definition virtual]]} {
-            append sql { DEFAULT CHARACTER SET utf8mb4}
-        }
     }
     return $sql
 }
