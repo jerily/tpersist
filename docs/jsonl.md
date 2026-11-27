@@ -52,7 +52,9 @@ The first record has `format: "tpersist"`, `version: 1`, source `dialect`,
 `created_at`, and `schema`. The embedded schema is the same version 1 JSON format
 accepted by `db_read_schema`, captured from live database catalogs. It includes
 columns, literal defaults, primary/unique keys, foreign keys, identity columns,
-and ordinary indexes with descending columns. Package schema files are not read.
+ordinary indexes with descending columns, and managed full-text declarations.
+Exports contain the base rows and logical search definition. Import rebuilds
+the search objects from the restored text. Package schema files are not read.
 Each data record has `table` and `values`; the final `complete: true` record has
 counts for every table. A backup is a single JSONL file, optionally gzip compressed,
 so schemas and rows cannot be separated during upload or download.
@@ -89,9 +91,9 @@ The importer validates the entire archive even when selecting only some tables.
 Import into a database that is not being used by the application.
 
 The initial schema snapshot implementation supports the portable tpersist schema
-vocabulary. It rejects MySQL, custom types/collations, generated columns,
+vocabulary. It rejects MySQL, custom types/collations, unmanaged generated columns,
 expression defaults (including PostgreSQL serial/`nextval` defaults), checks,
-triggers, row security, partitioning/inheritance, deferrable/cyclic/self-referencing
+unmanaged triggers, row security, partitioning/inheritance, deferrable/cyclic/self-referencing
 foreign keys, partial/expression/covering indexes, and other detected features it
 cannot faithfully reconstruct. Custom identity sequence settings are rejected;
 sequence counters above the maximum retained row ID are not archived. Roles,

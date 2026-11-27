@@ -87,6 +87,21 @@ proc ::tpersist::_connect {dialect adapter options autobegin} {
     } trap {TCL WRONGARGS} {message opts} {
         _fail ARGS $message
     }
+    try {
+        switch -- $dialect {
+            mysql {
+                # TDBC can negotiate the three-byte "utf8" character set.
+                $command evaldirect {SET NAMES utf8mb4}
+            }
+            sqlite {
+                # REPLACE must run the deletion trigger for the displaced row.
+                $command allrows {PRAGMA recursive_triggers = ON} {}
+            }
+        }
+    } on error {message opts} {
+        catch {$command close}
+        return -options $opts $message
+    }
     set handle tpersist:db[incr serial]
     dict set connections $handle [dict create command $command dialect $dialect \
         transaction 0 savepoints {} autobegin $autobegin]
@@ -144,11 +159,21 @@ proc ::tpersist::_prepare {handle statement options} {
         }
         set rs [$command execute [dict get $compiled params]]
         set columns [$rs columns]
+        # PostgreSQL expands wildcards to include stored generated vectors.
+        # The private namespace is reserved by the full-text schema contract.
+        set hidden {}
+        if {[dict get $c dialect] eq "postgresql"} {
+            set pattern {^__tpfts_column_[0-9a-f]{16}(?:#[0-9]+)?$}
+            set hidden [lsearch -all -inline -regexp $columns $pattern]
+            if {[llength $hidden]} {
+                set columns [lsearch -all -inline -not -regexp $columns $pattern]
+            }
+        }
         if {[llength $columns] != [llength [lsort -unique $columns]]} {
             $rs close
             _fail COLUMNS "duplicate result column names; use db_alias to give them unique names"
         }
-        return [list $command $rs $columns]
+        return [list $command $rs $columns $hidden]
     } on error {message opts} {
         catch {$command close}
         return -options $opts $message
@@ -157,10 +182,11 @@ proc ::tpersist::_prepare {handle statement options} {
 
 # Collect rows and metadata, then release statement resources.
 proc ::tpersist::db_execute {handle statement args} {
-    lassign [_prepare $handle $statement $args] command rs columns
+    lassign [_prepare $handle $statement $args] command rs columns hidden
     try {
         set rowcount [expr {[dict get $statement kind] eq "select" ? -1 : [$rs rowcount]}]
         set rows [$rs allrows -as dicts]
+        if {[llength $hidden]} {set rows [lmap row $rows {dict remove $row {*}$hidden}]}
         return [dict create columns $columns rows $rows rowcount $rowcount]
     } finally {
         try { $rs close } finally { $command close }
@@ -173,10 +199,11 @@ proc ::tpersist::db_foreach_row {handle varName statement args} {
     set script [lindex $args end]
     set options [lrange $args 0 end-1]
     upvar 1 $varName row
-    lassign [_prepare $handle $statement $options] command rs columns
+    lassign [_prepare $handle $statement $options] command rs columns hidden
     set count 0
     try {
         while {[$rs nextdict row]} {
+            if {[llength $hidden]} {set row [dict remove $row {*}$hidden]}
             incr count
             set code [catch {uplevel 1 $script} result opts]
             switch -- $code {

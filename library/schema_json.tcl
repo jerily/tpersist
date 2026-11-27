@@ -109,7 +109,7 @@ proc ::tpersist::_schemaFromNode {root} {
     }
     set tables {}; set indexes {}; set seenTables {}; set seenIndexes {}
     foreach tableNode [_schemaNode [dict get $root tables] array schema.tables] {
-        set table [_schemaFields $tableNode {name schema columns primary_key unique foreign_keys indexes} {name columns} table]
+        set table [_schemaFields $tableNode {name schema columns primary_key unique foreign_keys indexes virtual} {name columns} table]
         set name [_schemaNode [dict get $table name] string table.name]
         set path "table($name)"
         set args {}; set schema {}
@@ -169,6 +169,17 @@ proc ::tpersist::_schemaFromNode {root} {
                 lappend foreignKeys $converted
             }
             lappend args -foreign_keys $foreignKeys
+        }
+        if {[dict exists $table virtual]} {
+            set virtual {}
+            dict for {field node} [_schemaNode [dict get $table virtual] object $path.virtual] {
+                set vp "$path.virtual.$field"
+                set fields [_schemaFields $node {type document_id columns} {type document_id columns} $vp]
+                dict set virtual $field [dict create type [_schemaNode [dict get $fields type] string $vp.type] \
+                    document_id [_schemaNode [dict get $fields document_id] string $vp.document_id] \
+                    columns [_schemaNames [dict get $fields columns] $vp.columns]]
+            }
+            lappend args -virtual $virtual
         }
         set definition [db_define_table $name $columns {*}$args]
         lappend tables $definition
@@ -323,13 +334,23 @@ proc ::tpersist::db_apply_schema {handle filename args} {
     }
     set additions {}
     if {$additive} { set additions [_schemaAdditions $handle [dict get $document tables] $dialect] }
-    foreach definition [dict get $document tables] { db_create_table $handle $definition -if_not_exists 1 }
+    set searchPlans {}
+    foreach definition [dict get $document tables] {
+        if {$additive || [dict exists $definition virtual]} {
+            set plan [_ftsPlan $handle $definition $additive]
+            if {[llength $plan] || [dict exists $definition virtual]} {lappend searchPlans $definition $plan}
+        }
+    }
+    foreach definition [dict get $document tables] { _ddl $handle [_createTableSql $definition $dialect 1] }
     foreach sql $additions { _ddl $handle $sql }
     foreach index [dict get $document indexes] {
         if {$dialect eq "mysql" && [_schemaMysqlIndexExists $handle $index]} { continue }
         db_create_index $handle [dict get $index name] [dict get $index table] [dict get $index columns] \
             -unique [dict get $index unique] -descending [dict get $index descending] \
             -if_not_exists [expr {$dialect ne "mysql"}]
+    }
+    foreach {definition plan} $searchPlans {
+        _ftsTransaction $handle {_ftsExecute $handle $definition $plan}
     }
     return
 }

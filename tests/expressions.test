@@ -270,4 +270,26 @@ foreach {name script} {
     } -result 1
 }
 
+test expr-match {MATCH, NOT MATCH and MATCH_SCORE build the same nodes as the public constructors} -body {
+    set field [db_col search -table p]
+    set q [db_param q]
+    list [expr {[db_expr {p.search MATCH :q}] eq [db_match $field $q]}] \
+        [expr {[db_expr {p.search NOT MATCH :q}] eq [db_not [db_match $field $q]]}] \
+        [expr {[db_expr {MATCH_SCORE(p.search, :q) AS score}] eq [db_alias [db_match_score $field $q] score]}]
+} -result {1 1 1}
+
+foreach expression {
+    {search MATCH other_column}
+    {(a + b) MATCH :q}
+    {search MATCH 42}
+    {MATCH_SCORE(search)}
+    {MATCH_SCORE(search, :q, :other)}
+    {id AS __tpfts_column_0123456789abcdef}
+} {
+    test expr-invalid-match-$expression {invalid full-text operands are rejected by the parser} -body {
+        catch {db_expr $expression} message options
+        lrange [dict get $options -errorcode] 0 1
+    } -result {TPERSIST PARSE}
+}
+
 ::tcltest::cleanupTests

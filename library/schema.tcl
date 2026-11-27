@@ -23,7 +23,7 @@ proc ::tpersist::db_define_table {name columns args} {
     if {[llength $args] % 2} { _fail ARGS "table options must be name/value pairs" }
     set result [dict create version 1 kind table_def name $name columns $columns]
     foreach {key value} $args {
-        if {$key ni {-schema -primary_key -unique -foreign_keys}} { _fail ARGS "unknown table option: $key" }
+        if {$key ni {-schema -primary_key -unique -foreign_keys -virtual}} { _fail ARGS "unknown table option: $key" }
         dict set result [string range $key 1 end] $value
     }
     _validateTable $result
@@ -44,7 +44,7 @@ proc ::tpersist::_columnList {columns available dialect} {
 
 # Check column types, defaults, and table constraints.
 proc ::tpersist::_validateTable {definition} {
-    _fields $definition {version kind name schema columns primary_key unique foreign_keys}
+    _fields $definition {version kind name schema columns primary_key unique foreign_keys virtual}
     if {[dict get $definition version] ne "1" || [dict get $definition kind] ne "table_def"} {
         _fail VALIDATION "expected a version 1 table definition"
     }
@@ -121,6 +121,7 @@ proc ::tpersist::_validateTable {definition} {
             }
         }
     }
+    _ftsValidate $definition $pk
     return $pk
 }
 
@@ -308,6 +309,15 @@ proc ::tpersist::_columnSql {name spec dialect} {
 # Compile a table definition for the selected dialect.
 proc ::tpersist::_createTableSql {definition dialect ifNotExists} {
     set pk [_validateTable $definition]
+    if {$dialect eq "sqlite" && [dict exists $definition virtual]} {
+        dict for {field search} [dict get $definition virtual] {
+            set id [dict get $search document_id]
+            set spec [dict get $definition columns $id]
+            if {[dict get $spec type] eq "bigint" && ![_flag $spec not_null]} {
+                _fail VALIDATION "SQLite bigint document_id $id requires not_null"
+            }
+        }
+    }
     set pieces {}
     dict for {name spec} [dict get $definition columns] {
         lappend pieces [_columnSql $name $spec $dialect]
@@ -337,7 +347,12 @@ proc ::tpersist::_createTableSql {definition dialect ifNotExists} {
     set sql {CREATE TABLE }
     if {$ifNotExists} { append sql {IF NOT EXISTS } }
     append sql [_tableName $definition $dialect] " (" [join $pieces {, }] ")"
-    if {$dialect eq "mysql"} { append sql { ENGINE=InnoDB} }
+    if {$dialect eq "mysql"} {
+        append sql { ENGINE=InnoDB}
+        if {[dict exists $definition virtual] && [dict size [dict get $definition virtual]]} {
+            append sql { DEFAULT CHARACTER SET utf8mb4}
+        }
+    }
     return $sql
 }
 
@@ -375,7 +390,18 @@ proc ::tpersist::db_create_table {handle definition args} {
     set prefix [_takePrefix args]
     set flag [_ddlOption $args -if_not_exists]
     set dialect [db_dialect $handle]
-    _ddl $handle [_createTableSql [_prefixedDefinition $definition $dialect $prefix] $dialect $flag]
+    set definition [_prefixedDefinition $definition $dialect $prefix]
+    set sql [_createTableSql $definition $dialect $flag]
+    if {[dict exists $definition virtual] && [dict size [dict get $definition virtual]]} {
+        set plan [_ftsPlan $handle $definition 0]
+        _ftsTransaction $handle {
+            _ddl $handle $sql
+            _ftsExecute $handle $definition $plan
+        }
+    } else {
+        _ddl $handle $sql
+    }
+    return
 }
 
 # Drop the named table.
@@ -383,10 +409,33 @@ proc ::tpersist::db_drop_table {handle table args} {
     set prefix [_takePrefix args]
     set flag [_ddlOption $args -if_exists]
     set dialect [dict get [_connection $handle] dialect]
+    if {$dialect eq "mysql" && [dict get [_connection $handle] transaction]} {
+        _fail TRANSACTION "MySQL schema commands require no active transaction because DDL can commit implicitly"
+    }
     set sql {DROP TABLE }
     if {$flag} { append sql {IF EXISTS } }
-    append sql [_tableName [_prefixedTable $table $dialect $prefix] $dialect]
-    _ddl $handle $sql
+    set table [_prefixedTable $table $dialect $prefix]
+    if {[string match -nocase __tpfts_* [dict get $table name]]} {_fail VALIDATION "cannot drop a reserved full-text object directly"}
+    append sql [_tableName $table $dialect]
+    if {$dialect eq "mysql"} {
+        # The column and index belong to the base table. If a foreign key
+        # rejects its DROP, both must stay intact despite implicit DDL commits.
+        _ddl $handle $sql
+        if {[_ftsHasCatalog $handle $table]} {
+            _raw $handle "DELETE FROM [_ftsCatalog $handle $table] WHERE base_name=:base" [dict create base [dict get $table name]]
+        }
+        return
+    }
+    set plan [_ftsPlan $handle $table 1]
+    if {[llength $plan]} {
+        _ftsTransaction $handle {
+            _ftsExecute $handle $table $plan
+            _ddl $handle $sql
+        }
+    } else {
+        _ddl $handle $sql
+    }
+    return
 }
 
 # Create an index with validated columns and options.
@@ -400,6 +449,7 @@ proc ::tpersist::db_create_index {handle name table columns args} {
 
 # Compile index SQL for execution or preflight validation.
 proc ::tpersist::_createIndexSql {name table columns dialect args} {
+    if {[string match -nocase __tpfts_* $name]} {_fail VALIDATION "reserved full-text index name: $name"}
     if {[llength $args] % 2} { _fail ARGS "index options must be name/value pairs" }
     set flags {unique 0 if_not_exists 0 descending {}}
     foreach {key value} $args {

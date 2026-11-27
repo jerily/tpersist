@@ -228,13 +228,20 @@ static Tcl_Obj *primary(Parser *p) {
                 else if(equals(name,"AVG")) kind="avg";
                 else if(equals(name,"MIN")) kind="min";
                 else if(equals(name,"MAX")) kind="max";
+                else if(equals(name,"MATCH_SCORE")) kind="match_score";
             }
-            if(!kind) { failAt(p,start,"only COUNT, SUM, AVG, MIN, and MAX functions are supported"); return NULL; }
+            if(!kind) { failAt(p,start,"unsupported expression function"); return NULL; }
             if(!next(p) || !enter(p)) return NULL;
-            Tcl_Obj *arg=parseOr(p); p->depth--;
+            Tcl_Obj *arg=parseOr(p), *node=NULL;
             if(!arg) return NULL;
-            if(p->token!=')') { failAt(p,p->start,"expected ')' after one function argument"); return NULL; }
-            Tcl_Obj *node=unary(p,kind,arg);
+            if(!strcmp(kind,"match_score")) {
+                if(p->token!=',') { failAt(p,p->start,"MATCH_SCORE requires a field and query"); return NULL; }
+                if(!next(p)) return NULL;
+                Tcl_Obj *query=parseOr(p); if(!query) return NULL;
+                node=binary(p,kind,arg,query);
+            } else node=unary(p,kind,arg);
+            p->depth--;
+            if(p->token!=')') { failAt(p,p->start,"expected ')' after function arguments"); return NULL; }
             return next(p)?node:NULL;
         }
         Tcl_Obj *qualifier=NULL;
@@ -308,10 +315,11 @@ static Tcl_Obj *compare(Parser *p) {
     }
     int negate=word(p,"NOT");
     if(negate && !next(p)) return NULL;
-    if(word(p,"LIKE")) {
+    if(word(p,"LIKE") || word(p,"MATCH")) {
+        const char *op=word(p,"MATCH")?"match":"like";
         if(!next(p)) return NULL;
         Tcl_Obj *right=add(p); if(!right) return NULL;
-        Tcl_Obj *node=binary(p,"like",left,right);
+        Tcl_Obj *node=binary(p,op,left,right);
         return negate?unary(p,"not",node):node;
     }
     if(word(p,"IN")) {
@@ -333,7 +341,7 @@ static Tcl_Obj *compare(Parser *p) {
         Tcl_Obj *node=unary(p,negate?"not_in":"in",left); TpPut(p->c,node,"items",items);
         return next(p)?node:NULL;
     }
-    if(negate) { failAt(p,p->start,"expected IN or LIKE after NOT"); return NULL; }
+    if(negate) { failAt(p,p->start,"expected IN, LIKE, or MATCH after NOT"); return NULL; }
     return left;
 }
 

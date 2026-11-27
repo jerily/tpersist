@@ -41,6 +41,7 @@ become raw SQL. Constructors may defer detailed validation to compilation.
 | Commands | Arguments |
 |---|---|
 | `db_eq`, `db_ne`, `db_lt`, `db_le`, `db_gt`, `db_ge`, `db_like` | `left right` |
+| `db_match`, `db_match_score` | `virtualColumn queryValueOrParameter` |
 | `db_add`, `db_sub`, `db_mul`, `db_div` | `left right` |
 | `db_and`, `db_or` | `expression ?expression ...?` |
 | `db_not`, `db_is_null`, `db_is_not_null` | `expression` |
@@ -82,10 +83,10 @@ can freely mix both interfaces. `db_select -expr` replaces the `-columns` option
 for that call. The optional OO layer forwards the same options, for example
 `$adults where -expr {age >= 18}`.
 
-Supported syntax includes `=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`, arithmetic
+Supported syntax includes `MATCH`, `=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`, arithmetic
 `+ - * /`, unary signs, parentheses, `AND`, `OR`, `NOT`, `LIKE`, `NOT LIKE`,
 `IN`, `NOT IN`, `IS NULL`, and `IS NOT NULL`. Functions are limited to `COUNT`,
-`SUM`, `AVG`, `MIN`, and `MAX`; `COUNT(*)` is supported. Empty IN lists follow
+`SUM`, `AVG`, `MIN`, `MAX`, and `MATCH_SCORE`. `COUNT(*)` is supported. Empty IN lists follow
 the builder's true/false rules. Aliases require explicit `AS`.
 
 Precedence, from strongest to weakest, is unary signs, multiplication/division,
@@ -128,6 +129,42 @@ sort direction for later use in an appropriate context. It does not accept a
 comma-separated list; projection/order/group commands handle those lists through
 `-expr`. Without `-expr`, existing strings remain literal column names or the
 existing dictionary arguments, with no implicit parsing.
+
+## Full-text search
+
+Use `MATCH` to filter and `MATCH_SCORE` to project relevance. Both take the
+declared virtual field and a bound natural-language query. Higher scores
+rank first. Add a unique tie-breaker for deterministic ordering.
+
+```tcl
+set stmt [db_select [db_table products -as p] -expr {
+    p.id, p.title, MATCH_SCORE(p.search, :q) AS relevance
+}]
+set stmt [db_where $stmt -expr {p.search MATCH :q}]
+set stmt [db_order_by $stmt -expr {relevance DESC, p.id ASC}]
+set stmt [db_limit $stmt 20]
+db_execute $connection $stmt -params [dict create q {linen jacket}]
+```
+
+An unqualified field refers to the statement's base table. Qualify fields from
+joins using their table name or alias. Ordinary filters, pagination, and the
+optional OO API work with the same statement. `db_compile $stmt -dialect mysql`
+can compile it offline using only the statement. All search inputs use bindings.
+A parameter used in both `MATCH` and an ordinary comparison gets a separate
+binding for its search representation.
+
+Queries match any indexed word. Punctuation separates terms. Quotation marks,
+minus signs, and the word `OR` have no operator meaning in user input. Empty,
+NULL, and punctuation-only input match zero documents. The score for a miss
+is zero. SQLite uses inverted-sign BM25, PostgreSQL uses `ts_rank` with the
+`pg_catalog.simple` configuration, and MySQL uses natural-language relevance.
+Each engine applies its tokenizer and stopword rules. Use the score to order
+results within one query. See the [full-text schema declaration](schema-json.md#full-text-fields).
+
+For supplementary Unicode characters such as emoji or historic scripts, use
+Tcl 9 with current TDBC server drivers. Older Tcl 8.6 drivers can send
+surrogate bytes when binding strings to PostgreSQL or MySQL. This affects
+ordinary text writes as well as searches.
 
 ## Additive composition
 
@@ -376,7 +413,7 @@ on their storage engine.
 ## Schema definitions
 
 ```tcl
-db_define_table name columnDictionary ?-schema schema? ?-primary_key names? ?-unique columnLists? ?-foreign_keys definitions?
+db_define_table name columnDictionary ?-schema schema? ?-primary_key names? ?-unique columnLists? ?-foreign_keys definitions? ?-virtual fieldDictionary?
 db_schema_sql definition ?-dialect sqlite|postgresql|mysql? ?-prefix name?
 db_create_table connection definition ?-if_not_exists boolean? ?-prefix name?
 db_drop_table connection table ?-if_exists boolean? ?-prefix name?
@@ -413,8 +450,8 @@ flags or the table's `-primary_key`, but not both forms together.
 
 JSON schemas are versioned files stored under `sql/`. `db_read_schema` validates
 and returns table/index definitions; `db_apply_schema` creates missing objects.
-Its `-additive true` option also adds supported missing columns; the default is
-`false`.
+Its `-additive true` option adds supported missing columns and reconciles
+managed full-text fields. The default is `false`.
 See [JSON schema files](schema-json.md) for the format, defaults, and transaction
 behavior. These procedures load `tjson 1.0.27` or newer on first use.
 
