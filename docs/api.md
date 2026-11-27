@@ -300,7 +300,7 @@ db_connect -dialect postgresql -database app ?driverOptions...?
 db_connect -dialect mysql -database app ?driverOptions...?
 db_disconnect connection
 db_execute connection statement ?-params dictionary? ?-nulls names? ?-prefix name?
-db_foreach_row connection rowVariable statement ?-params dictionary? ?-nulls names? ?-prefix name? script
+db_foreach_row connection rowVariable statement ?-params dictionary? ?-nulls names? ?-prefix name? ?-columnsvariable varName? script
 ```
 
 The dictionary API opens an autocommit connection and accepts `postgres` or
@@ -338,7 +338,10 @@ unique names with `db_alias`.
 of rows visited, including a row whose body invokes `break`. It supports Tcl
 `break`, `continue`, `return`, and errors, and closes results/statements on every
 exit. It avoids building another result list in tpersist; underlying TDBC drivers
-may buffer all rows themselves.
+may buffer all rows themselves. Use `-columnsvariable names` to receive the
+ordered column names in the caller’s scope. They are available to the row
+script and after iteration, including when the driver reports columns for an
+empty result.
 
 The SQLite TDBC driver may report no column names for a query returning no rows.
 In that case `columns` is empty, while `rows {}` still represents a successful
